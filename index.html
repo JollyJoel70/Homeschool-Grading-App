@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Homeschool Grading App</title>
+  <link rel="stylesheet" href="styles.css">
+
+</head>
+
+<body>
+  <header class="app-header">
+    <div class="brand">
+      <div class="brand-mark">HG</div>
+      <div class="brand-text">
+        <h1 id="app-school-name">Homeschool Grading</h1>
+        <p class="subtitle">Simple. Vibrant. Insightful.</p>
+      </div>
+    </div>
+    <nav class="tabs" role="tablist" aria-label="Primary">
+      <button class="tab active" data-tab="assignments" role="tab" aria-selected="true">Assignments</button>
+      <button class="tab" data-tab="reports" role="tab" aria-selected="false">Reports</button>
+      <button class="tab" data-tab="settings" role="tab" aria-selected="false">Settings</button>
+    </nav>
+  </header>
+
+  <main>
+    <section id="settings" class="tab-panel" role="tabpanel" aria-labelledby="settings-tab">
+      <div class="panel-grid">
+        <section class="card span-2">
+          <div class="card-head">
+            <h2>School Info</h2>
+          </div>
+          <form id="school-form" class="inline-form">
+            <input type="text" id="school-name-input" placeholder="School name" required>
+            <button type="submit" class="btn primary">Save</button>
+          </form>
+          <p class="subtitle">Used in the app header and printed report cards.</p>
+        </section>
+
+        <section class="card span-2">
+          <div class="card-head">
+            <h2>School Year</h2>
+          </div>
+          <div class="card-actions">
+            <label>
+              <span class="sr-only">Select School Year</span>
+              <select id="year-select"></select>
+            </label>
+            <button id="add-year-btn" class="btn outline">Add Next School Year</button>
+          </div>
+        </section>
+        <section class="card">
+          <h2>Students</h2>
+          <form id="student-form" class="inline-form">
+            <input type="text" id="student-name" placeholder="Add student name" required>
+            <button type="submit" class="btn primary">Add</button>
+          </form>
+          <ul id="students-list" class="chip-list" aria-live="polite"></ul>
+        </section>
+
+        <section class="card">
+          <h2>Subjects</h2>
+          <form id="subject-form" class="inline-form">
+            <input type="text" id="subject-name" placeholder="Add subject name" required>
+            <button type="submit" class="btn primary">Add</button>
+          </form>
+          <ul id="subjects-list" class="chip-list" aria-live="polite"></ul>
+        </section>
+
+        <section class="card span-2">
+          <div class="card-head">
+            <h2>School Year Terms</h2>
+            <div class="card-actions">
+              <button id="reset-terms" class="btn subtle">Reset to Defaults</button>
+            </div>
+          </div>
+          <form id="terms-form" class="terms-grid"></form>
+          <div class="form-actions">
+            <button id="save-terms" class="btn primary">Save Terms</button>
+          </div>
+        </section>
+
+        <section class="card span-2">
+          <div class="card-head">
+            <h2>Clear Assignments</h2>
+          </div>
+          <p class="subtitle">Remove all assignments. This cannot be undone.</p>
+          <div class="card-actions">
+            <button id="clear-assignments-btn" class="btn outline">Clear All Assignments</button>
+          </div>
+        </section>
+
+        <section class="card span-2">
+          <div class="card-head">
+            <h2>Export / Import Data</h2>
+          </div>
+          <p class="subtitle">Backup or restore your data as a JSON file.</p>
+          <div class="card-actions">
+            <button id="export-btn" class="btn outline">Export JSON</button>
+            <button id="import-btn" class="btn outline">Import JSON</button>
+            <input id="hidden-file-input" type="file" accept="application/json" hidden>
+          </div>
+        </section>
+
+        <section class="card span-2">
+          <div class="card-head">
+            <h2>Debug Data</h2>
+          </div>
+          <p class="subtitle">Generate sample assignments across all terms for all students and subjects.</p>
+          <div class="form-actions">
+            <button id="debug-generate-btn" class="btn primary">Generate Debug Data</button>
+          </div>
+        </section>
+      </div>
+    </section>
+
+    <section id="assignments" class="tab-panel active" role="tabpanel" aria-labelledby="assignments-tab">
+      <div class="panel-grid">
+        <section class="card span-2">
+          <div class="card-head">
+            <h2>Add Assignment</h2>
+          </div>
+          <form id="assignment-form" class="grid-form one-row">
+            <label>
+              <span>Student</span>
+              <select id="assignment-student" required></select>
+            </label>
+            <label>
+              <span>Subject</span>
+              <select id="assignment-subject" required></select>
+            </label>
+            <label>
+              <span>Total Questions</span>
+              <input type="number" id="assignment-total" min="1" required placeholder="e.g., 20">
+            </label>
+            <label>
+              <span>Total Correct</span>
+              <input type="number" id="assignment-correct" min="0" required placeholder="e.g., 18">
+            </label>
+            <label>
+              <span>Date</span>
+              <input type="date" id="assignment-date" required>
+            </label>
+            <div class="form-actions">
+              <button type="submit" class="btn primary">Add Assignment</button>
+            </div>
+          </form>
+        </section>
+
+        <section class="card span-2">
+          <div class="card-head">
+            <h2>Assignment History</h2>
+            <div class="card-actions">
+              <label>
+                <span class="sr-only">Filter Subject</span>
+                <select id="assignments-subject-filter"></select>
+              </label>
+              <label>
+                <span class="sr-only">Filter Month</span>
+                <input type="month" id="assignments-month-filter">
+              </label>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table class="table" id="assignments-table">
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Student</th>
+                  <th>Subject</th>
+                  <th>Result</th>
+                  <th>Percent</th>
+                  <th>Grade</th>
+                  <th>Term</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    </section>
+
+    <section id="reports" class="tab-panel" role="tabpanel" aria-labelledby="reports-tab">
+      <div class="panel-grid">
+        <section class="card span-2">
+          <div class="card-head">
+            <h2>Performance Over Time</h2>
+            <div class="card-actions">
+              <label>
+                <span class="sr-only">Select term</span>
+                <select id="term-filter"></select>
+              </label>
+              <div id="student-filters"></div>
+            </div>
+          </div>
+          <canvas id="scores-chart" height="140"></canvas>
+        </section>
+
+        <section class="card">
+          <div class="card-head">
+            <h2>Average by Day of Week</h2>
+          </div>
+          <div class="table-wrap">
+            <table class="table" id="weekday-avg-table">
+              <thead>
+                <tr>
+                  <th>Day</th>
+                  <th>Average %</th>
+                  <th>Letter</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="card chart-card">
+          <div class="card-head">
+            <h2>Filtered Performance</h2>
+            <div class="card-actions">
+              <label>
+                <span class="sr-only">Select student</span>
+                <select id="filter-student"></select>
+              </label>
+              <label>
+                <span class="sr-only">Select subject</span>
+                <select id="filter-subject"></select>
+              </label>
+            </div>
+          </div>
+          <canvas id="filtered-chart" height="140"></canvas>
+        </section>
+
+        <section class="card span-2" id="report-cards">
+          <div class="card-head">
+            <h2>Report Cards</h2>
+            <div class="card-actions">
+              <label>
+                <span class="sr-only">Select student</span>
+                <select id="report-student"></select>
+              </label>
+              <button id="print-report" class="btn outline">Print</button>
+            </div>
+          </div>
+          <div id="report-card-content" class="report-card"></div>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <footer class="app-footer">
+    <span id="status-text">Ready</span>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+
+</html>
