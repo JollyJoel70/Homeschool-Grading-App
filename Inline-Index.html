@@ -115,7 +115,7 @@
 
     .panel-grid {
       display: grid;
-      gap: 16px;
+      row-gap: 16px;
       grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
@@ -411,26 +411,10 @@
       background: linear-gradient(135deg, rgba(124, 92, 255, .12), rgba(23, 212, 255, .12));
     }
 
-    /* Reports grid: lock widths — flexible main + fixed sidebar */
+    /* Reports grid: single main column */
     #reports .panel-grid {
-      grid-template-columns: minmax(0, 1fr) 200px;
+      grid-template-columns: 1fr;
       align-items: start;
-      grid-auto-flow: dense;
-    }
-
-    /* Place specific cards into intended columns */
-    #weekday-card {
-      grid-column: 2;
-      width: 200px;
-      height: 440px;
-      display: flex;
-      flex-direction: column;
-    }
-
-    #weekday-card .table-wrap {
-      flex: 1;
-      overflow: auto;
-      margin-top: 0;
     }
 
     #filtered-card {
@@ -662,31 +646,10 @@
           </div>
         </section>
 
-        <section class="card" id="weekday-card">
-          <div class="card-head">
-            <h2>Average by Day of Week</h2>
-          </div>
-          <div class="table-wrap">
-            <table class="table" id="weekday-avg-table">
-              <thead>
-                <tr>
-                  <th>Day</th>
-                  <th>Average %</th>
-                </tr>
-              </thead>
-              <tbody></tbody>
-            </table>
-          </div>
-        </section>
-
         <section class="card chart-card" id="filtered-card">
           <div class="card-head">
             <h2>Filtered Performance</h2>
             <div class="card-actions">
-              <label>
-                <span class="sr-only">Select student</span>
-                <select id="filter-student"></select>
-              </label>
               <label>
                 <span class="sr-only">Select subject</span>
                 <select id="filter-subject"></select>
@@ -700,10 +663,6 @@
           <div class="card-head">
             <h2>Report Cards</h2>
             <div class="card-actions">
-              <label>
-                <span class="sr-only">Select student</span>
-                <select id="report-student"></select>
-              </label>
               <button id="print-report" class="btn outline">Print</button>
             </div>
           </div>
@@ -814,21 +773,19 @@
       const scoresCanvas = document.getElementById('scores-chart');
       const studentFilters = document.getElementById('student-filters');
       const termFilter = document.getElementById('term-filter');
-      const weekdayAvgTableBody = document.querySelector('#weekday-avg-table tbody');
       const filteredChartCanvas = document.getElementById('filtered-chart');
-      const filterStudentSelect = document.getElementById('filter-student');
+      // removed: filterStudentSelect
       const filterSubjectSelect = document.getElementById('filter-subject');
       const appSchoolNameEl = document.getElementById('app-school-name');
       const schoolForm = document.getElementById('school-form');
       const schoolNameInput = document.getElementById('school-name-input');
-      const reportStudentSelect = document.getElementById('report-student');
+      // removed: reportStudentSelect
       const reportCardContent = document.getElementById('report-card-content');
       const printReportBtn = document.getElementById('print-report');
       // student nav below performance card
       const studentPrevBtn = document.getElementById('student-prev');
       const studentNextBtn = document.getElementById('student-next');
       const studentCurrentLabel = document.getElementById('student-current');
-      const weekdayCardEl = document.getElementById('weekday-card');
       const filteredCardEl = document.getElementById('filtered-card');
       // debug/clear
       const debugGenerateBtn = document.getElementById('debug-generate-btn');
@@ -1028,7 +985,7 @@
 
         populateSelect(asgStudent, state.students, 'Select student');
         populateSelect(asgSubject, state.subjects, 'Select subject');
-        populateSelect(reportStudentSelect, [{ id: 'all', name: 'All Students' }, ...state.students], 'Select student');
+        // removed: report student dropdown
         populateTermFilter();
         populateAssignmentsSubjectFilter();
         populateAssignmentsStudentFilter();
@@ -1212,9 +1169,7 @@
       }
 
       function populateReportFilters() {
-        const studentOpts = [{ value: 'all', label: 'All Students' }, ...state.students.map(s => ({ value: s.id, label: s.name }))];
         const subjectOpts = [{ value: 'all', label: 'All Subjects' }, ...state.subjects.map(s => ({ value: s.id, label: s.name }))];
-        populateSimpleSelect(filterStudentSelect, studentOpts);
         populateSimpleSelect(filterSubjectSelect, subjectOpts);
       }
 
@@ -1329,18 +1284,11 @@
       if (termFilter) {
         termFilter.addEventListener('change', () => {
           refreshChart();
-          renderWeekdayAverages();
-          syncFilteredHeight();
           refreshFilteredChart();
         });
       }
 
-      if (filterStudentSelect) {
-        filterStudentSelect.addEventListener('change', () => {
-          const selId = filterStudentSelect.value === 'all' ? undefined : filterStudentSelect.value;
-          if (selId) applySelectedStudent(selId); else refreshFilteredChart();
-        });
-      }
+      // removed: filterStudentSelect change handler
 
       if (filterSubjectSelect) {
         filterSubjectSelect.addEventListener('change', () => {
@@ -1567,7 +1515,6 @@
           // re-evaluate term filter since terms changed scope
           populateTermFilter();
           refreshChart();
-          renderWeekdayAverages();
           refreshFilteredChart();
         });
       }
@@ -1814,13 +1761,7 @@
         drawChart(scoresCanvas, labels, datasets);
       }
 
-      function syncFilteredHeight() {
-        if (!weekdayCardEl || !filteredChartCanvas || !filteredCardEl) return;
-        const target = Math.max(120, weekdayCardEl.clientHeight);
-        const other = Math.max(0, filteredCardEl.clientHeight - filteredChartCanvas.clientHeight);
-        const h = Math.max(120, target - other);
-        filteredChartCanvas.style.height = h + 'px';
-      }
+      // removed height sync with weekday card
 
       function ensureSelectedStudentExists() {
         // Initialize or clean up selected student
@@ -1854,12 +1795,10 @@
           studentCurrentLabel.textContent = nm;
         }
         // Update report student select & filtered student select
-        if (reportStudentSelect) reportStudentSelect.value = studentId;
-        if (filterStudentSelect) filterStudentSelect.value = studentId;
+
         // Re-render dependent sections
         refreshChart(studentId);
-        renderWeekdayAverages();
-        syncFilteredHeight();
+
         refreshFilteredChart();
         buildReportCard(studentId);
       }
@@ -1874,31 +1813,7 @@
         return names[(m - 1) % 12];
       }
 
-      function renderWeekdayAverages() {
-        if (!weekdayAvgTableBody) return;
-        const selectedTermId = termFilter ? termFilter.value : 'all';
-        const activeTerms = getActiveTerms();
-        const termRange = selectedTermId === 'all' ? null : activeTerms.find(t => t.id === selectedTermId);
-        const inTerm = (a) => {
-          if (!termRange) return true;
-          const d = parseIsoDateLocal(a.date);
-          return parseIsoDateLocal(termRange.start) <= d && d <= parseIsoDateLocal(termRange.end);
-        };
-        const selId = getSelectedStudentId();
-        const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-        const buckets = Array.from({ length: 7 }, () => []);
-        state.assignments.filter(a => inTerm(a) && (!selId || a.studentId === selId)).forEach(a => {
-          const d = parseIsoDateLocal(a.date).getDay();
-          buckets[d].push(a);
-        });
-        weekdayAvgTableBody.innerHTML = '';
-        buckets.forEach((arr, i) => {
-          const pct = arr.length ? Math.round((arr.reduce((s, a) => s + (a.correct / a.total), 0) / arr.length) * 1000) / 10 : null;
-          const tr = document.createElement('tr');
-          tr.innerHTML = `<td>${days[i]}</td><td>${pct == null ? '—' : pct + '%'}</td>`;
-          weekdayAvgTableBody.appendChild(tr);
-        });
-      }
+      // removed: renderWeekdayAverages
 
       function refreshFilteredChart() {
         if (!filteredChartCanvas) return;
@@ -1910,7 +1825,7 @@
           const d = parseIsoDateLocal(a.date);
           return parseIsoDateLocal(termRange.start) <= d && d <= parseIsoDateLocal(termRange.end);
         };
-        const studentId = getSelectedStudentId() || (filterStudentSelect ? filterStudentSelect.value : 'all');
+        const studentId = getSelectedStudentId() || 'all';
         const subjectId = filterSubjectSelect ? filterSubjectSelect.value : 'all';
 
         const filtered = state.assignments.filter(a => inTerm(a))
@@ -1943,8 +1858,6 @@
         const studentLabel = studentId === 'all' ? 'All Students' : (state.students.find(s => s.id === studentId)?.name || 'Student');
         const subjectLabel = subjectId === 'all' ? 'All Subjects' : (state.subjects.find(s => s.id === subjectId)?.name || 'Subject');
 
-        // Keep height matched to Day of Week card
-        syncFilteredHeight();
         drawChart(filteredChartCanvas, labels, [{ label: `${studentLabel} • ${subjectLabel}`, data, borderColor: '#17d4ff' }]);
       }
 
@@ -2055,30 +1968,24 @@
       }
 
       function refreshReports() {
-        populateSelect(reportStudentSelect, state.students, 'Select student');
+
         refreshChart();
-        renderWeekdayAverages();
         populateReportFilters();
-        syncFilteredHeight();
         // Apply selected student across below-cards
         const selId = getSelectedStudentId();
-        if (filterStudentSelect && selId) filterStudentSelect.value = selId;
         refreshFilteredChart();
-        const current = selId || reportStudentSelect.value || state.students[0]?.id;
+        const current = selId || state.students[0]?.id;
         if (current) {
-          reportStudentSelect.value = current;
           buildReportCard(current);
         } else {
           reportCardContent.innerHTML = '<p>Select a student</p>';
         }
       }
 
-      reportStudentSelect.addEventListener('change', (e) => {
-        applySelectedStudent(e.target.value);
-      });
+      // removed: reportStudentSelect change handler
 
       printReportBtn.addEventListener('click', () => {
-        const studentId = reportStudentSelect.value || state.students[0]?.id;
+        const studentId = getSelectedStudentId() || state.students[0]?.id;
         if (!studentId) { setStatus('Select a student'); return; }
         openPrintableReport(studentId);
       });
@@ -2430,7 +2337,7 @@
       // Init
       init();
       // After initial render, align heights once DOM settles
-      setTimeout(syncFilteredHeight, 0);
+
     })();
 
 
