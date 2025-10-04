@@ -1,3 +1,8 @@
+// Guard against missing global hook referenced by inline onload
+if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'function') {
+  window.solveSimpleChallenge = function () { };
+}
+
 (function () {
   const STORAGE_KEY = "homeschool_grading_v1";
 
@@ -691,14 +696,31 @@
       const defaultName = `homeschool-grades_${y}-${mm}-${dd}_${hh}${mi}.json`;
 
       const json = JSON.stringify(state, null, 2);
-      if (window.showSaveFilePicker) {
-        const handle = await window.showSaveFilePicker({
-          suggestedName: defaultName,
-          types: [{ description: 'JSON Files', accept: { 'application/json': ['.json'] } }]
-        });
-        const writable = await handle.createWritable();
-        await writable.write(json);
-        await writable.close();
+      const canUseNative = !!window.showSaveFilePicker && (window.isSecureContext === true);
+      if (canUseNative) {
+        try {
+          const handle = await window.showSaveFilePicker({
+            suggestedName: defaultName,
+            types: [{ description: 'JSON Files', accept: { 'application/json': ['.json'] } }]
+          });
+          const writable = await handle.createWritable();
+          await writable.write(json);
+          await writable.close();
+        } catch (e) {
+          // Fallback to anchor download on NotAllowed/Security
+          if (e && (e.name === 'NotAllowedError' || e.name === 'SecurityError' || /activation is required/i.test(String(e.message || '')))) {
+            const blob = new Blob([json], { type: 'application/json' });
+            const a = document.createElement('a');
+            const url = URL.createObjectURL(blob);
+            a.href = url; a.download = defaultName;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+          } else {
+            throw e;
+          }
+        }
       } else {
         const blob = new Blob([json], { type: 'application/json' });
         const a = document.createElement('a');
@@ -717,22 +739,28 @@
   });
 
   importBtn.addEventListener('click', async () => {
+    const canUseNative = !!window.showOpenFilePicker && (window.isSecureContext === true);
+    if (!canUseNative) {
+      hiddenFileInput.value = '';
+      hiddenFileInput.click();
+      return;
+    }
     try {
-      if (window.showOpenFilePicker) {
-        const [handle] = await window.showOpenFilePicker({
-          types: [{ description: 'JSON Files', accept: { 'application/json': ['.json'] } }],
-          multiple: false
-        });
-        const file = await handle.getFile();
-        const text = await file.text();
-        handleImportedJson(text);
-      } else {
-        hiddenFileInput.value = '';
-        hiddenFileInput.click();
-      }
+      const [handle] = await window.showOpenFilePicker({
+        types: [{ description: 'JSON Files', accept: { 'application/json': ['.json'] } }],
+        multiple: false
+      });
+      const file = await handle.getFile();
+      const text = await file.text();
+      handleImportedJson(text);
     } catch (e) {
       console.error(e);
-      setStatus('Import cancelled');
+      if (e && (e.name === 'NotAllowedError' || e.name === 'SecurityError' || /activation is required/i.test(String(e.message || '')))) {
+        hiddenFileInput.value = '';
+        hiddenFileInput.click();
+      } else {
+        setStatus('Import cancelled');
+      }
     }
   });
 

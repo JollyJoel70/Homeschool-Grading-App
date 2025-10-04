@@ -411,16 +411,45 @@
       background: linear-gradient(135deg, rgba(124, 92, 255, .12), rgba(23, 212, 255, .12));
     }
 
-    /* Ensure each Reports card is full-width on its own row */
+    /* Reports grid: lock widths — flexible main + fixed sidebar */
     #reports .panel-grid {
-      grid-template-columns: 1fr;
+      grid-template-columns: minmax(0, 1fr) 200px;
+      align-items: start;
+      grid-auto-flow: dense;
+    }
+
+    /* Place specific cards into intended columns */
+    #weekday-card {
+      grid-column: 2;
+      width: 200px;
+      height: 440px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    #weekday-card .table-wrap {
+      flex: 1;
+      overflow: auto;
+      margin-top: 0;
+    }
+
+    #filtered-card {
+      grid-column: 1;
+      height: 440px;
+      display: flex;
+      flex-direction: column;
     }
 
     /* Charts should fill card width */
-    #scores-chart,
-    #filtered-chart {
+    #scores-chart {
       width: 100%;
       height: 280px;
+      display: block;
+    }
+
+    #filtered-chart {
+      width: 100%;
+      flex: 1;
       display: block;
     }
 
@@ -430,7 +459,7 @@
     }
 
     .chart-card canvas {
-      height: 100% !important;
+      height: 280px !important;
     }
   </style>
 
@@ -441,7 +470,7 @@
     <div class="brand">
       <div class="brand-mark">HG</div>
       <div class="brand-text">
-        <h1 id="app-school-name">Homeschool Grading</h1>
+        <h1 id="app-school-name">Homeschool Grading Calculator</h1>
         <p class="subtitle">Track grades. Visualize progress. Print report cards.</p>
       </div>
     </div>
@@ -505,41 +534,12 @@
           </div>
           <form id="terms-form" class="terms-grid"></form>
           <div class="form-actions">
+            <button id="auto-generate-terms" class="btn outline">Auto Generate Terms</button>
             <button id="save-terms" class="btn primary">Save Terms</button>
           </div>
         </section>
 
-        <section class="card span-2">
-          <div class="card-head">
-            <h2>Clear Assignments</h2>
-          </div>
-          <p class="subtitle">Remove all assignments. This cannot be undone.</p>
-          <div class="card-actions">
-            <button id="clear-assignments-btn" class="btn outline">Clear All Assignments</button>
-          </div>
-        </section>
 
-        <section class="card span-2">
-          <div class="card-head">
-            <h2>Export / Import Data</h2>
-          </div>
-          <p class="subtitle">Backup or restore your data as a JSON file.</p>
-          <div class="card-actions">
-            <button id="export-btn" class="btn outline">Export JSON</button>
-            <button id="import-btn" class="btn outline">Import JSON</button>
-            <input id="hidden-file-input" type="file" accept="application/json" hidden>
-          </div>
-        </section>
-
-        <section class="card span-2">
-          <div class="card-head">
-            <h2>Debug Data</h2>
-          </div>
-          <p class="subtitle">Generate sample assignments across all terms for all students and subjects.</p>
-          <div class="form-actions">
-            <button id="debug-generate-btn" class="btn primary">Generate Debug Data</button>
-          </div>
-        </section>
 
         <section class="card span-2">
           <div class="card-head">
@@ -645,13 +645,24 @@
                 <span class="sr-only">Select term</span>
                 <select id="term-filter"></select>
               </label>
-              <div id="student-filters"></div>
             </div>
           </div>
+          <div id="student-filters" class="card-actions" style="margin-top:8px;"></div>
           <canvas id="scores-chart" height="140"></canvas>
         </section>
 
-        <section class="card">
+        <!-- Student navigation for reports (applies to cards below) -->
+        <section class="card span-2">
+          <div class="card-actions" style="justify-content:center; min-height: 40px; align-items:center;">
+            <button id="student-prev" class="btn outline" aria-label="Previous student">◀</button>
+            <span id="student-current" style="min-width: 160px; text-align:center; font-weight:600;">
+              <!-- filled by JS -->
+            </span>
+            <button id="student-next" class="btn outline" aria-label="Next student">▶</button>
+          </div>
+        </section>
+
+        <section class="card" id="weekday-card">
           <div class="card-head">
             <h2>Average by Day of Week</h2>
           </div>
@@ -661,7 +672,6 @@
                 <tr>
                   <th>Day</th>
                   <th>Average %</th>
-                  <th>Letter</th>
                 </tr>
               </thead>
               <tbody></tbody>
@@ -669,7 +679,7 @@
           </div>
         </section>
 
-        <section class="card chart-card">
+        <section class="card chart-card" id="filtered-card">
           <div class="card-head">
             <h2>Filtered Performance</h2>
             <div class="card-actions">
@@ -736,15 +746,15 @@
         try {
           const raw = localStorage.getItem(STORAGE_KEY);
           if (!raw) return {
-            students: [], subjects: [], assignments: [], terms: defaultTerms(), years: [], currentYearId: undefined, schoolName: 'Homeschool Grading'
+            students: [], subjects: [], assignments: [], terms: defaultTerms(), years: [], currentYearId: undefined, schoolName: 'Homeschool Grading Calculator'
           };
           const parsed = JSON.parse(raw);
           parsed.terms = (parsed.terms && parsed.terms.length === 4) ? parsed.terms : defaultTerms();
-          if (!parsed.schoolName) parsed.schoolName = 'Homeschool Grading';
+          if (!parsed.schoolName) parsed.schoolName = 'Homeschool Grading Calculator';
           return parsed;
         } catch (e) {
           console.error(e);
-          return { students: [], subjects: [], assignments: [], terms: defaultTerms(), years: [], currentYearId: undefined, schoolName: 'Homeschool Grading' };
+          return { students: [], subjects: [], assignments: [], terms: defaultTerms(), years: [], currentYearId: undefined, schoolName: 'Homeschool Grading Calculator' };
         }
       }
 
@@ -787,6 +797,7 @@
       const termsForm = document.getElementById('terms-form');
       const resetTermsBtn = document.getElementById('reset-terms');
       const saveTermsBtn = document.getElementById('save-terms');
+      const autoGenTermsBtn = document.getElementById('auto-generate-terms');
       const yearSelect = document.getElementById('year-select');
       const addYearBtn = document.getElementById('add-year-btn');
 
@@ -813,6 +824,12 @@
       const reportStudentSelect = document.getElementById('report-student');
       const reportCardContent = document.getElementById('report-card-content');
       const printReportBtn = document.getElementById('print-report');
+      // student nav below performance card
+      const studentPrevBtn = document.getElementById('student-prev');
+      const studentNextBtn = document.getElementById('student-next');
+      const studentCurrentLabel = document.getElementById('student-current');
+      const weekdayCardEl = document.getElementById('weekday-card');
+      const filteredCardEl = document.getElementById('filtered-card');
       // debug/clear
       const debugGenerateBtn = document.getElementById('debug-generate-btn');
       const clearAssignmentsBtn = document.getElementById('clear-assignments-btn');
@@ -991,7 +1008,7 @@
         asgDate.value = todayStr();
         setDefaultMonthFilter();
         syncAllUI();
-        if (appSchoolNameEl) appSchoolNameEl.textContent = state.schoolName || 'Homeschool Grading';
+        if (appSchoolNameEl) appSchoolNameEl.textContent = state.schoolName || 'Homeschool Grading Calculator';
         if (schoolNameInput) schoolNameInput.value = state.schoolName || '';
       }
 
@@ -1016,6 +1033,8 @@
         populateAssignmentsSubjectFilter();
         populateAssignmentsStudentFilter();
         populateReportFilters();
+        // Ensure a selected student exists
+        ensureSelectedStudentExists();
 
         renderAssignmentsTable();
         renderTermsEditor();
@@ -1311,13 +1330,15 @@
         termFilter.addEventListener('change', () => {
           refreshChart();
           renderWeekdayAverages();
+          syncFilteredHeight();
           refreshFilteredChart();
         });
       }
 
       if (filterStudentSelect) {
         filterStudentSelect.addEventListener('change', () => {
-          refreshFilteredChart();
+          const selId = filterStudentSelect.value === 'all' ? undefined : filterStudentSelect.value;
+          if (selId) applySelectedStudent(selId); else refreshFilteredChart();
         });
       }
 
@@ -1440,6 +1461,79 @@
         refreshReports();
       });
 
+      if (autoGenTermsBtn) {
+        autoGenTermsBtn.addEventListener('click', () => {
+          // Prompt for start/end dates (mm/dd/yy or mm/dd/yyyy)
+          const active = getActiveTerms();
+          const suggestedStart = active && active.length ? formatDateDisplay(active[0].start) : '';
+          const suggestedEnd = active && active.length ? formatDateDisplay(active[active.length - 1].end) : '';
+          const startDisp = prompt('School start date (mm/dd/yy)', suggestedStart);
+          if (!startDisp) { setStatus('Cancelled'); return; }
+          const startIso = parseDateDisplay(startDisp);
+          if (!startIso) { setStatus('Invalid start date'); return; }
+          const endDisp = prompt('School end date (mm/dd/yy)', suggestedEnd);
+          if (!endDisp) { setStatus('Cancelled'); return; }
+          const endIso = parseDateDisplay(endDisp);
+          if (!endIso) { setStatus('Invalid end date'); return; }
+          const s = parseIsoDateLocal(startIso);
+          const e = parseIsoDateLocal(endIso);
+          if (!(s instanceof Date) || !(e instanceof Date) || isNaN(s.getTime()) || isNaN(e.getTime())) { setStatus('Invalid dates'); return; }
+          if (e < s) { setStatus('End date must be on/after start date'); return; }
+
+          function addDays(date, days) {
+            return new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
+          }
+          function diffDaysInclusive(a, b) {
+            const MS = 24 * 60 * 60 * 1000;
+            const aStart = new Date(a.getFullYear(), a.getMonth(), a.getDate());
+            const bStart = new Date(b.getFullYear(), b.getMonth(), b.getDate());
+            return Math.floor((bStart - aStart) / MS) + 1;
+          }
+
+          const totalDays = diffDaysInclusive(s, e);
+          if (totalDays < 4) { setStatus('Range too short (min 4 days)'); return; }
+
+          const base = Math.floor(totalDays / 4);
+          const extra = totalDays % 4;
+          const lens = [base, base, base, base];
+          for (let i = 0; i < extra; i++) lens[i] += 1;
+
+          const pieces = [];
+          let currentStart = s;
+          for (let i = 0; i < 4; i++) {
+            const segLen = Math.max(1, lens[i]);
+            const segEnd = addDays(currentStart, segLen - 1);
+            pieces.push({ start: currentStart, end: segEnd });
+            currentStart = addDays(segEnd, 1);
+          }
+          // Clamp last end to provided end date just in case
+          pieces[3].end = e;
+
+          const y = (state.years || []).find(y => y.id === getCurrentYearId());
+          const termsArr = y ? y.terms : state.terms;
+          // Ensure there are 4 term objects
+          if (!termsArr || termsArr.length !== 4) {
+            if (y) y.terms = defaultTerms(); else state.terms = defaultTerms();
+          }
+          const target = y ? y.terms : state.terms;
+          target.forEach((t, idx) => {
+            t.name = `Term ${idx + 1}`;
+            t.start = fmtDate(pieces[idx].start);
+            t.end = fmtDate(pieces[idx].end);
+          });
+          // Optionally update the year display name
+          if (y) {
+            y.name = schoolYearNameFromTerms(target);
+          }
+          saveState();
+          // Update UI
+          populateYearSelect();
+          renderTermsEditor();
+          refreshReports();
+          setStatus('Terms auto-generated');
+        });
+      }
+
       if (addYearBtn) {
         addYearBtn.addEventListener('click', () => {
           const baseYear = new Date().getFullYear();
@@ -1480,22 +1574,29 @@
 
       // Export / Import
       importBtn.addEventListener('click', async () => {
+        const canUseNative = !!window.showOpenFilePicker && (window.isSecureContext === true);
+        if (!canUseNative) {
+          hiddenFileInput.value = '';
+          hiddenFileInput.click();
+          return;
+        }
         try {
-          if (window.showOpenFilePicker) {
-            const [handle] = await window.showOpenFilePicker({
-              types: [{ description: 'JSON Files', accept: { 'application/json': ['.json'] } }],
-              multiple: false
-            });
-            const file = await handle.getFile();
-            const text = await file.text();
-            handleImportedJson(text);
-          } else {
-            hiddenFileInput.value = '';
-            hiddenFileInput.click();
-          }
+          const [handle] = await window.showOpenFilePicker({
+            types: [{ description: 'JSON Files', accept: { 'application/json': ['.json'] } }],
+            multiple: false
+          });
+          const file = await handle.getFile();
+          const text = await file.text();
+          handleImportedJson(text);
         } catch (e) {
           console.error(e);
-          setStatus('Import cancelled');
+          // Fallback to hidden input on user-activation or permission errors
+          if (e && (e.name === 'NotAllowedError' || e.name === 'SecurityError' || /activation is required/i.test(String(e.message || '')))) {
+            hiddenFileInput.value = '';
+            hiddenFileInput.click();
+          } else {
+            setStatus('Import cancelled');
+          }
         }
       });
 
@@ -1539,13 +1640,9 @@
         // If the canvas is inside a chart-card, fill available height beneath header
         let cssHeight = parseInt(getComputedStyle(canvas).height, 10) || 300;
         const container = canvas.closest('.chart-card');
-        if (container) {
-          const header = container.querySelector('.card-head');
-          const containerH = container.clientHeight || 300;
-          const headerH = header ? header.clientHeight : 0;
-          const padding = 16; // inner padding approximation
-          cssHeight = Math.max(200, containerH - headerH - padding);
-        }
+        // Keep charts at a stable height; avoid dynamic resizing on interactions
+        // Previously we tried to fill remaining height, which caused growth
+        // when sibling content changed. We now prefer a fixed canvas CSS height.
         const height = cssHeight;
         if (canvas.width !== Math.floor(width * dpr) || canvas.height !== Math.floor(height * dpr)) {
           canvas.width = Math.floor(width * dpr);
@@ -1642,16 +1739,14 @@
       }
       function renderStudentFilters() {
         studentFilters.innerHTML = '';
-        const allBtn = document.createElement('button');
-        allBtn.className = 'btn outline';
-        allBtn.textContent = 'All';
-        allBtn.addEventListener('click', () => { refreshChart(); reportStudentSelect.value = state.students[0]?.id || ''; if (reportStudentSelect.value) buildReportCard(reportStudentSelect.value); });
-        studentFilters.appendChild(allBtn);
+        const selId = getSelectedStudentId();
+        // Render quick chips for jumping, but also sync selected student
         state.students.forEach(s => {
           const b = document.createElement('button');
           b.className = 'btn outline';
           b.textContent = s.name;
-          b.addEventListener('click', () => { refreshChart(s.id); reportStudentSelect.value = s.id; buildReportCard(s.id); });
+          if (s.id === selId) b.style.filter = 'brightness(1.25)';
+          b.addEventListener('click', () => { applySelectedStudent(s.id); });
           studentFilters.appendChild(b);
         });
       }
@@ -1719,6 +1814,56 @@
         drawChart(scoresCanvas, labels, datasets);
       }
 
+      function syncFilteredHeight() {
+        if (!weekdayCardEl || !filteredChartCanvas || !filteredCardEl) return;
+        const target = Math.max(120, weekdayCardEl.clientHeight);
+        const other = Math.max(0, filteredCardEl.clientHeight - filteredChartCanvas.clientHeight);
+        const h = Math.max(120, target - other);
+        filteredChartCanvas.style.height = h + 'px';
+      }
+
+      function ensureSelectedStudentExists() {
+        // Initialize or clean up selected student
+        const all = state.students || [];
+        if (!all.length) {
+          state.selectedStudentId = undefined;
+          if (studentCurrentLabel) studentCurrentLabel.textContent = '';
+          return;
+        }
+        if (!state.selectedStudentId || !all.some(s => s.id === state.selectedStudentId)) {
+          state.selectedStudentId = all[0].id;
+          saveState();
+        }
+        if (studentCurrentLabel) {
+          const nm = all.find(s => s.id === state.selectedStudentId)?.name || '';
+          studentCurrentLabel.textContent = nm;
+        }
+      }
+
+      function getSelectedStudentId() {
+        return state.selectedStudentId || (state.students && state.students[0] ? state.students[0].id : undefined);
+      }
+
+      function applySelectedStudent(studentId) {
+        if (!studentId) return;
+        state.selectedStudentId = studentId;
+        saveState();
+        // Update label
+        if (studentCurrentLabel) {
+          const nm = state.students.find(s => s.id === studentId)?.name || '';
+          studentCurrentLabel.textContent = nm;
+        }
+        // Update report student select & filtered student select
+        if (reportStudentSelect) reportStudentSelect.value = studentId;
+        if (filterStudentSelect) filterStudentSelect.value = studentId;
+        // Re-render dependent sections
+        refreshChart(studentId);
+        renderWeekdayAverages();
+        syncFilteredHeight();
+        refreshFilteredChart();
+        buildReportCard(studentId);
+      }
+
       function weekOfMonth(date) {
         const day = date.getDate();
         return Math.floor((day - 1) / 7) + 1;
@@ -1739,9 +1884,10 @@
           const d = parseIsoDateLocal(a.date);
           return parseIsoDateLocal(termRange.start) <= d && d <= parseIsoDateLocal(termRange.end);
         };
+        const selId = getSelectedStudentId();
         const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
         const buckets = Array.from({ length: 7 }, () => []);
-        state.assignments.filter(a => inTerm(a)).forEach(a => {
+        state.assignments.filter(a => inTerm(a) && (!selId || a.studentId === selId)).forEach(a => {
           const d = parseIsoDateLocal(a.date).getDay();
           buckets[d].push(a);
         });
@@ -1749,7 +1895,7 @@
         buckets.forEach((arr, i) => {
           const pct = arr.length ? Math.round((arr.reduce((s, a) => s + (a.correct / a.total), 0) / arr.length) * 1000) / 10 : null;
           const tr = document.createElement('tr');
-          tr.innerHTML = `<td>${days[i]}</td><td>${pct == null ? '—' : pct + '%'}</td><td>${pct == null ? '—' : letterGrade(pct)}</td>`;
+          tr.innerHTML = `<td>${days[i]}</td><td>${pct == null ? '—' : pct + '%'}</td>`;
           weekdayAvgTableBody.appendChild(tr);
         });
       }
@@ -1764,7 +1910,7 @@
           const d = parseIsoDateLocal(a.date);
           return parseIsoDateLocal(termRange.start) <= d && d <= parseIsoDateLocal(termRange.end);
         };
-        const studentId = filterStudentSelect ? filterStudentSelect.value : 'all';
+        const studentId = getSelectedStudentId() || (filterStudentSelect ? filterStudentSelect.value : 'all');
         const subjectId = filterSubjectSelect ? filterSubjectSelect.value : 'all';
 
         const filtered = state.assignments.filter(a => inTerm(a))
@@ -1797,6 +1943,8 @@
         const studentLabel = studentId === 'all' ? 'All Students' : (state.students.find(s => s.id === studentId)?.name || 'Student');
         const subjectLabel = subjectId === 'all' ? 'All Subjects' : (state.subjects.find(s => s.id === subjectId)?.name || 'Subject');
 
+        // Keep height matched to Day of Week card
+        syncFilteredHeight();
         drawChart(filteredChartCanvas, labels, [{ label: `${studentLabel} • ${subjectLabel}`, data, borderColor: '#17d4ff' }]);
       }
 
@@ -1911,13 +2059,22 @@
         refreshChart();
         renderWeekdayAverages();
         populateReportFilters();
+        syncFilteredHeight();
+        // Apply selected student across below-cards
+        const selId = getSelectedStudentId();
+        if (filterStudentSelect && selId) filterStudentSelect.value = selId;
         refreshFilteredChart();
-        const current = reportStudentSelect.value || state.students[0]?.id;
-        if (current) buildReportCard(current);
+        const current = selId || reportStudentSelect.value || state.students[0]?.id;
+        if (current) {
+          reportStudentSelect.value = current;
+          buildReportCard(current);
+        } else {
+          reportCardContent.innerHTML = '<p>Select a student</p>';
+        }
       }
 
       reportStudentSelect.addEventListener('change', (e) => {
-        buildReportCard(e.target.value);
+        applySelectedStudent(e.target.value);
       });
 
       printReportBtn.addEventListener('click', () => {
@@ -2059,81 +2216,221 @@
         doc.document.close();
       }
 
-      if (saveBtn) {
-        saveBtn.addEventListener('click', async () => {
-          try {
-            const now = new Date();
-            const y = now.getFullYear();
-            const mm = String(now.getMonth() + 1).padStart(2, '0');
-            const dd = String(now.getDate()).padStart(2, '0');
-            const hh = String(now.getHours()).padStart(2, '0');
-            const mi = String(now.getMinutes()).padStart(2, '0');
-            const defaultName = `homeschool-grades_${y}-${mm}-${dd}_${hh}${mi}.json`;
-            const json = JSON.stringify(state, null, 2);
-            if (window.showSaveFilePicker) {
-              const handle = await window.showSaveFilePicker({
-                suggestedName: defaultName,
-                types: [{ description: 'JSON Files', accept: { 'application/json': ['.json'] } }]
-              });
-              const writable = await handle.createWritable();
-              await writable.write(json);
-              await writable.close();
-            } else {
-              const blob = new Blob([json], { type: 'application/json' });
-              const a = document.createElement('a');
-              const url = URL.createObjectURL(blob);
-              a.href = url; a.download = defaultName;
-              document.body.appendChild(a);
-              a.click();
-              a.remove();
-              URL.revokeObjectURL(url);
-            }
-            setStatus('Saved');
-          } catch (e) {
-            console.error(e);
-            setStatus('Save failed');
-          }
-        });
-      }
-
-      if (resetBtn) {
-        resetBtn.addEventListener('click', () => {
-          const ok = confirm('Reset will restore default terms and clear students, subjects, and assignments. Continue?');
-          if (!ok) return;
-          localStorage.removeItem(STORAGE_KEY);
-          state = loadState();
-          saveState();
-          syncAllUI();
-          setStatus('App reset');
-        });
-      }
-
-      if (backfillTermsBtn) {
-        backfillTermsBtn.addEventListener('click', () => {
-          const terms = getAllTerms();
-          let updated = 0;
-          state.assignments.forEach(a => {
-            const d = parseIsoDateLocal(a.date);
-            const match = terms.find(t => {
-              const ts = parseIsoDateLocal(t.start);
-              const te = parseIsoDateLocal(t.end);
-              return ts <= d && d <= te;
+      // Shared data handlers so legacy and data-card buttons both work
+      async function doSaveJson() {
+        try {
+          const now = new Date();
+          const y = now.getFullYear();
+          const mm = String(now.getMonth() + 1).padStart(2, '0');
+          const dd = String(now.getDate()).padStart(2, '0');
+          const hh = String(now.getHours()).padStart(2, '0');
+          const mi = String(now.getMinutes()).padStart(2, '0');
+          const defaultName = `homeschool-grades_${y}-${mm}-${dd}_${hh}${mi}.json`;
+          const json = JSON.stringify(state, null, 2);
+          if (window.showSaveFilePicker) {
+            const handle = await window.showSaveFilePicker({
+              suggestedName: defaultName,
+              types: [{ description: 'JSON Files', accept: { 'application/json': ['.json'] } }]
             });
-            const newId = match ? match.id : undefined;
-            if ((a.termId || undefined) !== newId) {
-              a.termId = newId;
-              updated++;
+            const writable = await handle.createWritable();
+            await writable.write(json);
+            await writable.close();
+          } else {
+            const blob = new Blob([json], { type: 'application/json' });
+            const a = document.createElement('a');
+            const url = URL.createObjectURL(blob);
+            a.href = url; a.download = defaultName;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+          }
+          setStatus('Saved');
+        } catch (e) {
+          console.error(e);
+          setStatus('Save failed');
+        }
+      }
+
+      async function doImportJson() {
+        try {
+          if (window.showOpenFilePicker) {
+            const [handle] = await window.showOpenFilePicker({
+              types: [{ description: 'JSON Files', accept: { 'application/json': ['.json'] } }],
+              multiple: false
+            });
+            const file = await handle.getFile();
+            const text = await file.text();
+            handleImportedJson(text);
+          } else {
+            hiddenFileInput.value = '';
+            hiddenFileInput.click();
+          }
+        } catch (e) {
+          console.error(e);
+          setStatus('Import cancelled');
+        }
+      }
+
+      function doGenerateDebugData() {
+        if (state.students.length === 0 || state.subjects.length === 0) {
+          setStatus('Add at least one student and subject first');
+          return;
+        }
+        const ok = confirm('Generate sample assignments across all terms for all students and subjects?');
+        if (!ok) return;
+        const rng = seededRandom();
+        state.students.forEach(student => {
+          const totalAssignments = 100;
+          const perSubject = Math.max(1, Math.floor(totalAssignments / Math.max(1, state.subjects.length)));
+          let created = 0;
+          state.subjects.forEach(subject => {
+            for (let i = 0; i < perSubject; i++) {
+              const term = getActiveTerms()[i % getActiveTerms().length];
+              const date = randomDateInRange(parseIsoDateLocal(term.start), parseIsoDateLocal(term.end), rng);
+              const total = 10 + Math.floor(rng() * 21);
+              const correct = Math.max(0, Math.min(total, Math.floor(total * (0.5 + rng() * 0.5))));
+              state.assignments.push({
+                id: cryptoRandomId(),
+                studentId: student.id,
+                subjectId: subject.id,
+                total,
+                correct,
+                date: fmtDate(date),
+                termId: termIdForDate(getActiveTerms(), fmtDate(date))
+              });
+              created++;
             }
           });
-          saveState();
-          renderAssignmentsTable();
-          refreshReports();
-          setStatus(updated ? `Backfilled ${updated} assignments` : 'No changes');
+          while (created < totalAssignments) {
+            const subject = state.subjects[Math.floor(rng() * state.subjects.length)];
+            const term = getActiveTerms()[Math.floor(rng() * getActiveTerms().length)];
+            const date = randomDateInRange(parseIsoDateLocal(term.start), parseIsoDateLocal(term.end), rng);
+            const total = 10 + Math.floor(rng() * 21);
+            const correct = Math.max(0, Math.min(total, Math.floor(total * (0.5 + rng() * 0.5))));
+            state.assignments.push({
+              id: cryptoRandomId(),
+              studentId: student.id,
+              subjectId: subject.id,
+              total,
+              correct,
+              date: fmtDate(date),
+              termId: termIdForDate(getActiveTerms(), fmtDate(date))
+            });
+            created++;
+          }
         });
+        saveState();
+        renderAssignmentsTable();
+        refreshReports();
+        setStatus('Debug data generated');
       }
+
+      function doClearAllAssignments() {
+        const ok = confirm('Clear ALL assignments? This cannot be undone.');
+        if (!ok) return;
+        state.assignments = [];
+        saveState();
+        renderAssignmentsTable();
+        refreshReports();
+        setStatus('Assignments cleared');
+      }
+
+      function doReset() {
+        const ok = confirm('Reset will clear ALL data and restore defaults. Continue?');
+        if (!ok) return;
+        try {
+          localStorage.removeItem(STORAGE_KEY);
+        } catch (e) {
+          console.error(e);
+        }
+        state = loadState();
+        saveState();
+        // Update header and input immediately
+        if (appSchoolNameEl) appSchoolNameEl.textContent = state.schoolName || 'Homeschool Grading Calculator';
+        if (schoolNameInput) schoolNameInput.value = state.schoolName || '';
+        syncAllUI();
+        setStatus('App reset');
+      }
+
+      function doBackfillTerms() {
+        const terms = getAllTerms();
+        let updated = 0;
+        state.assignments.forEach(a => {
+          const d = parseIsoDateLocal(a.date);
+          const match = terms.find(t => {
+            const ts = parseIsoDateLocal(t.start);
+            const te = parseIsoDateLocal(t.end);
+            return ts <= d && d <= te;
+          });
+          const newId = match ? match.id : undefined;
+          if ((a.termId || undefined) !== newId) {
+            a.termId = newId;
+            updated++;
+          }
+        });
+        saveState();
+        renderAssignmentsTable();
+        refreshReports();
+        setStatus(updated ? `Backfilled ${updated} assignments` : 'No changes');
+      }
+
+      // Wire Save buttons (Data card Save and legacy Export JSON)
+      document.querySelectorAll('#save-btn, #export-btn').forEach(btn => {
+        if (btn) btn.addEventListener('click', doSaveJson);
+      });
+
+      // Wire Import buttons (Data card Import and legacy Import JSON)
+      document.querySelectorAll('#import-btn').forEach(btn => {
+        if (btn) btn.addEventListener('click', doImportJson);
+      });
+
+      // Hidden file input stays as-is for fallback
+
+      // Wire Debug buttons (Data card Debug Import and legacy Generate Debug Data)
+      document.querySelectorAll('#debug-import-btn, #debug-generate-btn').forEach(btn => {
+        if (btn) btn.addEventListener('click', doGenerateDebugData);
+      });
+
+      // Wire Clear All Assignments (both Data card and legacy card)
+      document.querySelectorAll('#clear-assignments-btn').forEach(btn => {
+        if (btn) btn.addEventListener('click', doClearAllAssignments);
+      });
+
+      // Wire Reset and Backfill Terms (Data card)
+      document.querySelectorAll('#reset-btn').forEach(btn => {
+        if (btn) btn.addEventListener('click', doReset);
+      });
+      document.querySelectorAll('#backfill-terms-btn').forEach(btn => {
+        if (btn) btn.addEventListener('click', doBackfillTerms);
+      });
+
+      // Wire student nav buttons
+      if (studentPrevBtn) studentPrevBtn.addEventListener('click', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        const list = state.students || [];
+        if (!list.length) return;
+        const sel = getSelectedStudentId();
+        const idx = Math.max(0, list.findIndex(s => s.id === sel));
+        const nextIdx = (idx - 1 + list.length) % list.length;
+        applySelectedStudent(list[nextIdx].id);
+        if (document.activeElement === studentPrevBtn && typeof studentPrevBtn.blur === 'function') studentPrevBtn.blur();
+      });
+      if (studentNextBtn) studentNextBtn.addEventListener('click', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        const list = state.students || [];
+        if (!list.length) return;
+        const sel = getSelectedStudentId();
+        const idx = Math.max(0, list.findIndex(s => s.id === sel));
+        const nextIdx = (idx + 1) % list.length;
+        applySelectedStudent(list[nextIdx].id);
+        if (document.activeElement === studentNextBtn && typeof studentNextBtn.blur === 'function') studentNextBtn.blur();
+      });
 
       // Init
       init();
+      // After initial render, align heights once DOM settles
+      setTimeout(syncFilteredHeight, 0);
     })();
 
 
