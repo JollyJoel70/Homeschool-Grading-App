@@ -1223,7 +1223,9 @@
           let end = Math.min(totalPages, start + maxButtons - 1);
           start = Math.max(1, Math.min(start, end - maxButtons + 1));
           for (let p = start; p <= end; p++) {
-            numbers.appendChild(makeBtn(String(p), p, false, p === currentPage));
+            const btn = makeBtn(String(p), p, false, p === currentPage);
+            if (p === currentPage) btn.classList.add('active');
+            numbers.appendChild(btn);
           }
           numbers.appendChild(makeBtn('Next', Math.min(totalPages, currentPage + 1), currentPage === totalPages));
 
