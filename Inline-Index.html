@@ -46,6 +46,7 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
+      gap: 16px;
       padding: 16px 24px;
       position: sticky;
       top: 0;
@@ -62,15 +63,46 @@
     }
 
     .brand-mark {
-      width: 40px;
-      height: 40px;
+      width: 48px;
+      height: 48px;
       border-radius: 12px;
-      background: linear-gradient(135deg, var(--primary), var(--accent));
-      display: grid;
-      place-items: center;
-      font-weight: 800;
+      background: linear-gradient(135deg, var(--primary) 0%, var(--accent) 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 900;
+      font-size: 24px;
+      line-height: 1;
+      text-align: center;
       color: #02040a;
-      box-shadow: var(--shadow);
+      box-shadow: var(--shadow), 0 0 0 1px rgba(255, 255, 255, .1) inset, 0 10px 24px rgba(23, 212, 255, .08);
+      border: 1px solid rgba(255, 255, 255, .12);
+      position: relative;
+      letter-spacing: -0.5px;
+      text-shadow: 0 1px 0 rgba(255, 255, 255, .25), 0 2px 6px rgba(2, 4, 10, .25);
+    }
+
+    .brand-mark::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      border-radius: inherit;
+      background: radial-gradient(120% 100% at 30% 20%, rgba(255, 255, 255, .35), rgba(255, 255, 255, 0) 60%);
+      pointer-events: none;
+    }
+
+    .brand-mark::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      border-radius: inherit;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, .3), inset 0 -8px 16px rgba(2, 4, 10, .35);
+      pointer-events: none;
+    }
+
+    .brand-mark .logo-plus {
+      font-size: 0.65em;
+      margin-left: 3px;
     }
 
     .brand-text h1 {
@@ -279,6 +311,30 @@
       border: 1px solid var(--border);
     }
 
+    .pagination {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      gap: 6px;
+      align-items: center;
+      margin-top: 10px;
+    }
+
+    .pagination .pager-numbers {
+      justify-self: center;
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .pagination .pager-size {
+      justify-self: end;
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+
+    .pagination .btn.active { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(23, 212, 255, .35) inset; filter: none; }
+
     .table {
       width: 100%;
       border-collapse: collapse;
@@ -452,10 +508,9 @@
 <body>
   <header class="app-header">
     <div class="brand">
-      <div class="brand-mark">HG</div>
+      <div class="brand-mark"><span>A</span><span class="logo-plus">+</span></div>
       <div class="brand-text">
         <h1 id="app-school-name">Homeschool Grading Calculator</h1>
-        <p class="subtitle">Track grades. Visualize progress. Print report cards.</p>
       </div>
     </div>
     <nav class="tabs" role="tablist" aria-label="Primary">
@@ -533,6 +588,7 @@
           <div class="card-actions">
             <button id="save-btn" class="btn outline">Save</button>
             <button id="import-btn" class="btn outline">Import</button>
+            <button id="export-excel-btn" class="btn outline">Export to Excel</button>
             <button id="debug-import-btn" class="btn outline">Debug Import</button>
             <button id="clear-assignments-btn" class="btn outline">Clear All Assignments</button>
             <button id="backfill-terms-btn" class="btn outline">Backfill Terms</button>
@@ -572,7 +628,7 @@
             </label>
             <label>
               <span>Percent</span>
-              <input type="number" id="assignment-percent" min="0" max="100" step="0.1" placeholder="e.g., 92.5">
+              <input type="number" id="assignment-percent" min="0" step="0.1" placeholder="e.g., 92.5">
             </label>
             <div class="form-actions">
               <button type="submit" class="btn primary">Add Assignment</button>
@@ -615,6 +671,7 @@
               <tbody></tbody>
             </table>
           </div>
+          <div class="pagination" id="assignments-pager"></div>
         </section>
       </div>
     </section>
@@ -751,6 +808,9 @@
       const assignmentsStudentFilter = document.getElementById('assignments-student-filter');
       const assignmentsMonthFilter = document.getElementById('assignments-month-filter');
       const assignmentsSubjectFilter = document.getElementById('assignments-subject-filter');
+      const assignmentsPageSize = document.getElementById('assignments-page-size');
+      const assignmentsPager = document.getElementById('assignments-pager');
+      if (state.assignmentsPageSize == null) state.assignmentsPageSize = 10;
 
       // terms
       const termsForm = document.getElementById('terms-form');
@@ -763,6 +823,7 @@
       // export/import
       const importBtn = document.getElementById('import-btn');
       const hiddenFileInput = document.getElementById('hidden-file-input');
+      const exportExcelBtn = document.getElementById('export-excel-btn');
       // new data card buttons
       const saveBtn = document.getElementById('save-btn');
       const debugImportBtn = document.getElementById('debug-import-btn');
@@ -871,6 +932,7 @@
       }
 
       function letterGrade(percent) {
+        if (percent > 100) return 'A++';
         if (percent >= 97) return 'A+';
         if (percent >= 93) return 'A';
         if (percent >= 90) return 'A-';
@@ -888,6 +950,7 @@
 
       function letterToGpa(letter) {
         switch (letter) {
+          case 'A++': return 4.0;
           case 'A+': return 4.0;
           case 'A': return 4.0;
           case 'A-': return 3.7;
@@ -1016,12 +1079,64 @@
         const month = (assignmentsMonthFilter && assignmentsMonthFilter.value) ? assignmentsMonthFilter.value : currentMonthStr();
         const studentIdFilter = (assignmentsStudentFilter && assignmentsStudentFilter.value) ? assignmentsStudentFilter.value : 'all';
         const subj = (assignmentsSubjectFilter && assignmentsSubjectFilter.value) ? assignmentsSubjectFilter.value : 'all';
-        const rows = [...state.assignments]
+        let rows = [...state.assignments]
           .filter(a => (a.date || '').startsWith(month))
           .filter(a => studentIdFilter === 'all' || a.studentId === studentIdFilter)
-          .filter(a => subj === 'all' || a.subjectId === subj)
-          .sort((a, b) => parseIsoDateLocal(b.date) - parseIsoDateLocal(a.date));
-        rows.forEach(a => {
+          .filter(a => subj === 'all' || a.subjectId === subj);
+
+        // Apply sorting if configured
+        const sortKey = state.assignmentsSortKey || 'date';
+        const sortDir = state.assignmentsSortDir || 'desc';
+        const dirMul = sortDir === 'asc' ? 1 : -1;
+        const cmpStr = (x, y) => x.localeCompare(y, undefined, { sensitivity: 'base' }) * dirMul;
+        const cmpNum = (x, y) => ((x === y) ? 0 : (x < y ? -1 : 1)) * dirMul;
+        rows.sort((a, b) => {
+          switch (sortKey) {
+            case 'date':
+              return cmpNum(parseIsoDateLocal(a.date).getTime(), parseIsoDateLocal(b.date).getTime());
+            case 'student': {
+              const sa = state.students.find(s => s.id === a.studentId)?.name || '';
+              const sb = state.students.find(s => s.id === b.studentId)?.name || '';
+              return cmpStr(sa, sb);
+            }
+            case 'subject': {
+              const sa = state.subjects.find(su => su.id === a.subjectId)?.name || '';
+              const sb = state.subjects.find(su => su.id === b.subjectId)?.name || '';
+              return cmpStr(sa, sb);
+            }
+            case 'result': {
+              const pa = (a.correct / Math.max(1, a.total));
+              const pb = (b.correct / Math.max(1, b.total));
+              return cmpNum(pa, pb);
+            }
+            case 'percent': {
+              return cmpNum(computePercent(a.correct, a.total), computePercent(b.correct, b.total));
+            }
+            case 'grade': {
+              return cmpNum(computePercent(a.correct, a.total), computePercent(b.correct, b.total));
+            }
+            case 'term': {
+              const ta = getAllTerms().find(t => t.id === a.termId)?.name || '';
+              const tb = getAllTerms().find(t => t.id === b.termId)?.name || '';
+              return cmpStr(ta, tb);
+            }
+            default:
+              return 0;
+          }
+        });
+        // Pagination
+        const pageSize = Math.max(1, parseInt((state.assignmentsPageSize != null ? state.assignmentsPageSize : (assignmentsPageSize && assignmentsPageSize.value)), 10) || 10);
+        if (assignmentsPageSize) assignmentsPageSize.value = String(pageSize);
+        const page = state.assignmentsPage || 1;
+        const total = rows.length;
+        const totalPages = Math.max(1, Math.ceil(total / pageSize));
+        const currentPage = Math.min(Math.max(1, page), totalPages);
+        state.assignmentsPage = currentPage;
+        const startIdx = (currentPage - 1) * pageSize;
+        const pageRows = rows.slice(startIdx, startIdx + pageSize);
+
+        // Render rows for current page
+        pageRows.forEach(a => {
           const student = state.students.find(s => s.id === a.studentId)?.name || '—';
           const subject = state.subjects.find(su => su.id === a.subjectId)?.name || '—';
           const percent = computePercent(a.correct, a.total);
@@ -1066,7 +1181,7 @@
             const newCorrectStr = prompt('Total Correct', String(a.correct));
             const newTotal = parseInt(newTotalStr, 10);
             const newCorrect = parseInt(newCorrectStr, 10);
-            if (Number.isNaN(newTotal) || Number.isNaN(newCorrect) || newTotal < 1 || newCorrect < 0 || newCorrect > newTotal) {
+            if (Number.isNaN(newTotal) || Number.isNaN(newCorrect) || newTotal < 1 || newCorrect < 0) {
               setStatus('Invalid totals');
               return;
             }
@@ -1080,6 +1195,60 @@
           });
           assignmentsTableBody.appendChild(tr);
         });
+
+        // Render pagination controls
+        if (assignmentsPager) {
+          assignmentsPager.innerHTML = '';
+          const numbers = document.createElement('div');
+          numbers.className = 'pager-numbers';
+          const sizeWrap = document.createElement('div');
+          sizeWrap.className = 'pager-size';
+
+          const makeBtn = (label, pageNum, disabled = false, active = false) => {
+            const b = document.createElement('button');
+            b.className = 'btn outline';
+            b.textContent = label;
+            if (active) b.style.filter = 'brightness(1.25)';
+            if (disabled) b.disabled = true;
+            b.addEventListener('click', () => {
+              state.assignmentsPage = pageNum;
+              renderAssignmentsTable();
+            });
+            return b;
+          };
+
+          numbers.appendChild(makeBtn('Prev', Math.max(1, currentPage - 1), currentPage === 1));
+          const maxButtons = 7;
+          let start = Math.max(1, currentPage - 3);
+          let end = Math.min(totalPages, start + maxButtons - 1);
+          start = Math.max(1, Math.min(start, end - maxButtons + 1));
+          for (let p = start; p <= end; p++) {
+            numbers.appendChild(makeBtn(String(p), p, false, p === currentPage));
+          }
+          numbers.appendChild(makeBtn('Next', Math.min(totalPages, currentPage + 1), currentPage === totalPages));
+
+          // Page size select on bottom-right
+          const label = document.createElement('label');
+          label.innerHTML = '<span class="sr-only">Rows per page</span>';
+          const sel = document.createElement('select');
+          sel.innerHTML = '<option value="10">10</option><option value="25">25</option><option value="50">50</option>';
+          sel.value = String(pageSize);
+          sel.addEventListener('change', () => {
+            state.assignmentsPageSize = parseInt(sel.value, 10) || 10;
+            if (assignmentsPageSize) assignmentsPageSize.value = String(state.assignmentsPageSize);
+            try { saveState(); } catch (_) { }
+            state.assignmentsPage = 1;
+            renderAssignmentsTable();
+          });
+          label.appendChild(sel);
+          sizeWrap.appendChild(label);
+
+          // Layout: [spacer][numbers centered][size right]
+          const spacer = document.createElement('div');
+          assignmentsPager.appendChild(spacer);
+          assignmentsPager.appendChild(numbers);
+          assignmentsPager.appendChild(sizeWrap);
+        }
       }
 
       function renderTermsEditor() {
@@ -1130,6 +1299,56 @@
         const start = parseIsoDateLocal(terms[0].start);
         const end = parseIsoDateLocal(terms[terms.length - 1].end);
         return `${start.getFullYear()}-${end.getFullYear()}`;
+      }
+
+      function escapeCsvCell(value) {
+        const s = String(value ?? '');
+        if (/[",\n]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+        return s;
+      }
+
+      function exportCurrentYearCsv() {
+        const terms = getActiveTerms();
+        const rangeTerms = terms && terms.length ? { start: terms[0].start, end: terms[terms.length - 1].end } : null;
+        const inRange = (a) => {
+          if (!rangeTerms) return true;
+          const d = parseIsoDateLocal(a.date);
+          return parseIsoDateLocal(rangeTerms.start) <= d && d <= parseIsoDateLocal(rangeTerms.end);
+        };
+        const rows = state.assignments.filter(inRange).map(a => {
+          const student = state.students.find(s => s.id === a.studentId)?.name || '';
+          const subject = state.subjects.find(su => su.id === a.subjectId)?.name || '';
+          const pct = computePercent(a.correct, a.total);
+          const grade = letterGrade(pct);
+          const termName = (function () {
+            const tId = a.termId || termIdForDate(getActiveTerms(), a.date);
+            const t = getAllTerms().find(t => t.id === tId);
+            return t ? t.name : '';
+          })();
+          return [
+            a.date,
+            student,
+            subject,
+            `${a.correct}/${a.total}`,
+            pct,
+            grade,
+            termName
+          ];
+        });
+        const header = ['Date', 'Student', 'Subject', 'Result', 'Percent', 'Grade', 'Term'];
+        const lines = [header, ...rows].map(cols => cols.map(escapeCsvCell).join(','));
+        const csv = lines.join('\n');
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+        const yname = schoolYearNameFromTerms(getActiveTerms());
+        const fileName = `grades_${yname}_export.csv`;
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = fileName;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        setStatus('Exported CSV for Excel');
       }
 
       function populateYearSelect() {
@@ -1215,12 +1434,10 @@
         const percentVal = parseFloat(asgPercent.value);
         // If percent is provided, compute totals prioritizing existing total if present
         if (!Number.isNaN(percentVal)) {
-          const pct = Math.max(0, Math.min(100, percentVal));
+          const pct = Math.max(0, percentVal);
           // Use provided total or fall back to 20
           total = Number.isNaN(total) || total < 1 ? 20 : total;
           correct = Math.round((pct / 100) * total);
-          // Ensure bounds
-          if (correct > total) correct = total;
           if (correct < 0) correct = 0;
           asgTotal.value = String(total);
           asgCorrect.value = String(correct);
@@ -1228,7 +1445,7 @@
         const date = asgDate.value || todayStr();
         const termId = termIdForDate(getActiveTerms(), date);
         if (!studentId || !subjectId || Number.isNaN(total) || Number.isNaN(correct)) { setStatus('Fill all fields'); return; }
-        if (total < 1 || correct < 0 || correct > total) { setStatus('Invalid totals'); return; }
+        if (total < 1 || correct < 0) { setStatus('Invalid totals'); return; }
         state.assignments.push({ id: cryptoRandomId(), studentId, subjectId, total, correct, date, termId });
         saveState();
         // Preserve student, subject, date; clear totals only
@@ -1255,13 +1472,32 @@
           if (Number.isNaN(p)) return;
           let t = parseInt(asgTotal.value, 10);
           if (Number.isNaN(t) || t < 1) t = 20;
-          const c = Math.round((Math.max(0, Math.min(100, p)) / 100) * t);
+          const c = Math.round((Math.max(0, p) / 100) * t);
           asgTotal.value = String(t);
           asgCorrect.value = String(c);
         };
         asgPercent.addEventListener('input', recalcFromPercent);
         asgPercent.addEventListener('change', recalcFromPercent);
       }
+
+      // Auto-fill percent from totals when both numbers are present
+      (function setupPercentAutoFill() {
+        if (!asgPercent || !asgTotal || !asgCorrect) return;
+        const updatePercent = () => {
+          const t = parseInt(asgTotal.value, 10);
+          const c = parseInt(asgCorrect.value, 10);
+          if (!Number.isNaN(t) && t >= 1 && !Number.isNaN(c) && c >= 0) {
+            const pct = computePercent(c, t);
+            asgPercent.value = String(pct);
+          } else {
+            asgPercent.value = '';
+          }
+        };
+        asgTotal.addEventListener('input', updatePercent);
+        asgCorrect.addEventListener('input', updatePercent);
+        asgTotal.addEventListener('change', updatePercent);
+        asgCorrect.addEventListener('change', updatePercent);
+      })();
 
       if (assignmentsMonthFilter) {
         assignmentsMonthFilter.addEventListener('change', () => {
@@ -1275,11 +1511,42 @@
         });
       }
 
+      if (assignmentsPageSize) {
+        assignmentsPageSize.addEventListener('change', () => {
+          state.assignmentsPageSize = parseInt(assignmentsPageSize.value, 10) || 10;
+          try { saveState(); } catch (_) { }
+          state.assignmentsPage = 1;
+          renderAssignmentsTable();
+        });
+      }
+
       if (assignmentsStudentFilter) {
         assignmentsStudentFilter.addEventListener('change', () => {
           renderAssignmentsTable();
         });
       }
+
+      // Sorting: click table headers to toggle sort
+      (function setupAssignmentsSorting() {
+        const thead = document.querySelector('#assignments-table thead');
+        if (!thead) return;
+        const headers = Array.from(thead.querySelectorAll('th'));
+        const keys = ['date', 'student', 'subject', 'result', 'percent', 'grade', 'term', 'actions'];
+        headers.forEach((th, idx) => {
+          const key = keys[idx];
+          if (!key || key === 'actions') return;
+          th.style.cursor = 'pointer';
+          th.addEventListener('click', () => {
+            const prevKey = state.assignmentsSortKey || 'date';
+            const prevDir = state.assignmentsSortDir || 'desc';
+            const nextDir = (prevKey === key && prevDir === 'asc') ? 'desc' : 'asc';
+            state.assignmentsSortKey = key;
+            state.assignmentsSortDir = nextDir;
+            saveState();
+            renderAssignmentsTable();
+          });
+        });
+      })();
 
       if (termFilter) {
         termFilter.addEventListener('change', () => {
@@ -2311,6 +2578,11 @@
       document.querySelectorAll('#backfill-terms-btn').forEach(btn => {
         if (btn) btn.addEventListener('click', doBackfillTerms);
       });
+
+      // Wire Export to Excel (CSV) button
+      if (exportExcelBtn) {
+        exportExcelBtn.addEventListener('click', exportCurrentYearCsv);
+      }
 
       // Wire student nav buttons
       if (studentPrevBtn) studentPrevBtn.addEventListener('click', (e) => {

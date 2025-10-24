@@ -71,6 +71,7 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
   const asgTotal = document.getElementById('assignment-total');
   const asgCorrect = document.getElementById('assignment-correct');
   const asgDate = document.getElementById('assignment-date');
+  const asgPercent = document.getElementById('assignment-percent');
   // term select removed; compute from date
   const assignmentsTableBody = document.querySelector('#assignments-table tbody');
   const assignmentsMonthFilter = document.getElementById('assignments-month-filter');
@@ -87,6 +88,7 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
   const exportBtn = document.getElementById('export-btn');
   const importBtn = document.getElementById('import-btn');
   const hiddenFileInput = document.getElementById('hidden-file-input');
+  const exportExcelBtn = document.getElementById('export-excel-btn');
 
   // reports
   const scoresCanvas = document.getElementById('scores-chart');
@@ -186,6 +188,7 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
   }
 
   function letterGrade(percent) {
+    if (percent > 100) return 'A++';
     if (percent >= 97) return 'A+';
     if (percent >= 93) return 'A';
     if (percent >= 90) return 'A-';
@@ -203,6 +206,7 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
 
   function letterToGpa(letter) {
     switch (letter) {
+      case 'A++': return 4.0;
       case 'A+': return 4.0;
       case 'A': return 4.0;
       case 'A-': return 3.7;
@@ -304,10 +308,51 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
     assignmentsTableBody.innerHTML = '';
     const month = (assignmentsMonthFilter && assignmentsMonthFilter.value) ? assignmentsMonthFilter.value : currentMonthStr();
     const subj = (assignmentsSubjectFilter && assignmentsSubjectFilter.value) ? assignmentsSubjectFilter.value : 'all';
-    const rows = [...state.assignments]
+    let rows = [...state.assignments]
       .filter(a => (a.date || '').startsWith(month))
-      .filter(a => subj === 'all' || a.subjectId === subj)
-      .sort((a, b) => new Date(b.date) - new Date(a.date));
+      .filter(a => subj === 'all' || a.subjectId === subj);
+
+    // Apply sorting if configured
+    const sortKey = state.assignmentsSortKey || 'date';
+    const sortDir = state.assignmentsSortDir || 'desc';
+    const dirMul = sortDir === 'asc' ? 1 : -1;
+    const cmpStr = (x, y) => x.localeCompare(y, undefined, { sensitivity: 'base' }) * dirMul;
+    const cmpNum = (x, y) => ((x === y) ? 0 : (x < y ? -1 : 1)) * dirMul;
+    rows.sort((a, b) => {
+      switch (sortKey) {
+        case 'date':
+          return cmpNum(new Date(a.date).getTime(), new Date(b.date).getTime());
+        case 'student': {
+          const sa = state.students.find(s => s.id === a.studentId)?.name || '';
+          const sb = state.students.find(s => s.id === b.studentId)?.name || '';
+          return cmpStr(sa, sb);
+        }
+        case 'subject': {
+          const sa = state.subjects.find(su => su.id === a.subjectId)?.name || '';
+          const sb = state.subjects.find(su => su.id === b.subjectId)?.name || '';
+          return cmpStr(sa, sb);
+        }
+        case 'result': {
+          const pa = (a.correct / Math.max(1, a.total));
+          const pb = (b.correct / Math.max(1, b.total));
+          return cmpNum(pa, pb);
+        }
+        case 'percent': {
+          return cmpNum(computePercent(a.correct, a.total), computePercent(b.correct, b.total));
+        }
+        case 'grade': {
+          // Sort by percent for grade column
+          return cmpNum(computePercent(a.correct, a.total), computePercent(b.correct, b.total));
+        }
+        case 'term': {
+          const ta = state.terms.find(t => t.id === a.termId)?.name || '';
+          const tb = state.terms.find(t => t.id === b.termId)?.name || '';
+          return cmpStr(ta, tb);
+        }
+        default:
+          return 0;
+      }
+    });
     rows.forEach(a => {
       const student = state.students.find(s => s.id === a.studentId)?.name || '—';
       const subject = state.subjects.find(su => su.id === a.subjectId)?.name || '—';
@@ -341,7 +386,7 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
         const newCorrectStr = prompt('Total Correct', String(a.correct));
         const newTotal = parseInt(newTotalStr, 10);
         const newCorrect = parseInt(newCorrectStr, 10);
-        if (Number.isNaN(newTotal) || Number.isNaN(newCorrect) || newTotal < 1 || newCorrect < 0 || newCorrect > newTotal) {
+        if (Number.isNaN(newTotal) || Number.isNaN(newCorrect) || newTotal < 1 || newCorrect < 0) {
           setStatus('Invalid totals');
           return;
         }
@@ -405,6 +450,56 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
     const start = new Date(terms[0].start);
     const end = new Date(terms[terms.length - 1].end);
     return `${start.getFullYear()}-${end.getFullYear()}`;
+  }
+
+  function escapeCsvCell(value) {
+    const s = String(value ?? '');
+    if (/[",\n]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+    return s;
+  }
+
+  function exportCurrentYearCsv() {
+    const terms = getActiveTerms();
+    const rangeTerms = terms && terms.length ? { start: terms[0].start, end: terms[terms.length - 1].end } : null;
+    const inRange = (a) => {
+      if (!rangeTerms) return true;
+      const d = new Date(a.date);
+      return new Date(rangeTerms.start) <= d && d <= new Date(rangeTerms.end);
+    };
+    const rows = state.assignments.filter(inRange).map(a => {
+      const student = state.students.find(s => s.id === a.studentId)?.name || '';
+      const subject = state.subjects.find(su => su.id === a.subjectId)?.name || '';
+      const pct = computePercent(a.correct, a.total);
+      const grade = letterGrade(pct);
+      const termName = (function(){
+        const tId = a.termId || termIdForDate(getActiveTerms(), a.date);
+        const t = state.terms.find(t => t.id === tId);
+        return t ? t.name : '';
+      })();
+      return [
+        a.date,
+        student,
+        subject,
+        `${a.correct}/${a.total}`,
+        pct,
+        grade,
+        termName
+      ];
+    });
+    const header = ['Date','Student','Subject','Result','Percent','Grade','Term'];
+    const lines = [header, ...rows].map(cols => cols.map(escapeCsvCell).join(','));
+    const csv = lines.join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const yname = schoolYearNameFromTerms(getActiveTerms());
+    const fileName = `grades_${yname}_export.csv`;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    setStatus('Exported CSV for Excel');
   }
 
   function populateYearSelect() {
@@ -486,7 +581,7 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
     const date = asgDate.value || todayStr();
     const termId = termIdForDate(getActiveTerms(), date);
     if (!studentId || !subjectId || Number.isNaN(total) || Number.isNaN(correct)) { setStatus('Fill all fields'); return; }
-    if (total < 1 || correct < 0 || correct > total) { setStatus('Invalid totals'); return; }
+    if (total < 1 || correct < 0) { setStatus('Invalid totals'); return; }
     state.assignments.push({ id: cryptoRandomId(), studentId, subjectId, total, correct, date, termId });
     saveState();
     // Preserve student, subject, date; clear totals only
@@ -505,6 +600,25 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
     refreshReports();
   });
 
+  // If a Percent input exists, auto-calc it from totals when both are valid
+  (function setupPercentAutoFill() {
+    if (!asgPercent || !asgTotal || !asgCorrect) return;
+    const updatePercent = () => {
+      const t = parseInt(asgTotal.value, 10);
+      const c = parseInt(asgCorrect.value, 10);
+      if (!Number.isNaN(t) && t >= 1 && !Number.isNaN(c) && c >= 0) {
+        const pct = computePercent(c, t);
+        asgPercent.value = String(pct);
+      } else {
+        asgPercent.value = '';
+      }
+    };
+    asgTotal.addEventListener('input', updatePercent);
+    asgCorrect.addEventListener('input', updatePercent);
+    asgTotal.addEventListener('change', updatePercent);
+    asgCorrect.addEventListener('change', updatePercent);
+  })();
+
   if (assignmentsMonthFilter) {
     assignmentsMonthFilter.addEventListener('change', () => {
       renderAssignmentsTable();
@@ -516,6 +630,28 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
       renderAssignmentsTable();
     });
   }
+
+  // Sorting: click table headers to toggle sort
+  (function setupAssignmentsSorting() {
+    const thead = document.querySelector('#assignments-table thead');
+    if (!thead) return;
+    const headers = Array.from(thead.querySelectorAll('th'));
+    const keys = ['date','student','subject','result','percent','grade','term','actions'];
+    headers.forEach((th, idx) => {
+      const key = keys[idx];
+      if (!key || key === 'actions') return;
+      th.style.cursor = 'pointer';
+      th.addEventListener('click', () => {
+        const prevKey = state.assignmentsSortKey || 'date';
+        const prevDir = state.assignmentsSortDir || 'desc';
+        const nextDir = (prevKey === key && prevDir === 'asc') ? 'desc' : 'asc';
+        state.assignmentsSortKey = key;
+        state.assignmentsSortDir = nextDir;
+        saveState();
+        renderAssignmentsTable();
+      });
+    });
+  })();
 
   if (termFilter) {
     termFilter.addEventListener('change', () => {
@@ -535,6 +671,11 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
     filterSubjectSelect.addEventListener('change', () => {
       refreshFilteredChart();
     });
+  }
+
+  // Wire Export to Excel (CSV) button
+  if (exportExcelBtn) {
+    exportExcelBtn.addEventListener('click', exportCurrentYearCsv);
   }
 
   // Debug data generation
