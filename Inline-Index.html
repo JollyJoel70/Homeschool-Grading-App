@@ -333,7 +333,11 @@
       align-items: center;
     }
 
-    .pagination .btn.active { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(23, 212, 255, .35) inset; filter: none; }
+    .pagination .btn.active {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px rgba(23, 212, 255, .35) inset;
+      filter: none;
+    }
 
     .table {
       width: 100%;
@@ -502,6 +506,9 @@
       height: 280px !important;
     }
   </style>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
 
 </head>
 
@@ -592,6 +599,7 @@
             <button id="debug-import-btn" class="btn outline">Debug Import</button>
             <button id="clear-assignments-btn" class="btn outline">Clear All Assignments</button>
             <button id="backfill-terms-btn" class="btn outline">Backfill Terms</button>
+            <button id="sync-now-btn" class="btn outline">Sync Now</button>
             <button id="reset-btn" class="btn outline">Reset</button>
             <input id="hidden-file-input" type="file" accept="application/json" hidden>
           </div>
@@ -736,6 +744,18 @@
   <script>
     (function () {
       const STORAGE_KEY = "homeschool_grading_v1";
+      // Fill these with your Firebase project's values
+      const FIREBASE_CONFIG = {
+        apiKey: "YOUR_API_KEY",
+        authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+        projectId: "YOUR_PROJECT_ID",
+        appId: "YOUR_APP_ID"
+      };
+      let firebaseReady = false;
+      let firestore = null;
+      let userDocRef = null;
+      let authUser = null;
+      let isApplyingRemote = false;
 
       const defaultTerms = () => {
         const year = new Date().getFullYear();
@@ -775,8 +795,74 @@
       }
 
       function saveState() {
+        try { state._updatedAt = Date.now(); } catch (_) { }
         localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+        if (userDocRef && !isApplyingRemote) {
+          uploadState().catch(() => { /* ignore */ });
+        }
         setStatus("Saved");
+      }
+
+      function firebaseConfigLooksValid(cfg) {
+        if (!cfg) return false;
+        const required = ["apiKey", "authDomain", "projectId", "appId"];
+        if (!required.every(k => typeof cfg[k] === 'string' && cfg[k] && !/^YOUR_/i.test(cfg[k]))) return false;
+        return true;
+      }
+
+      async function initFirebaseSync() {
+        try {
+          if (!firebaseConfigLooksValid(FIREBASE_CONFIG)) {
+            // Config not set yet; leave sync disabled but app works locally
+            const btn = document.getElementById('sync-now-btn');
+            if (btn) btn.disabled = true;
+            return;
+          }
+          if (firebaseReady) return;
+          if (!window.firebase || !firebase.initializeApp) return; // SDK not loaded
+          firebase.initializeApp(FIREBASE_CONFIG);
+          firestore = firebase.firestore();
+          try { await firestore.enableIndexedDbPersistence({ synchronizeTabs: true }); } catch (_) { /* may already be enabled or unsupported */ }
+          await firebase.auth().signInAnonymously();
+          authUser = firebase.auth().currentUser;
+          if (!authUser) throw new Error('Auth failed');
+          userDocRef = firestore.collection('homeschoolGrading').doc(authUser.uid);
+          firebaseReady = true;
+          // Start listener
+          userDocRef.onSnapshot((snap) => {
+            try {
+              if (!snap.exists) return;
+              const data = snap.data() || {};
+              const remoteState = data.state;
+              const remoteAt = Number(data.clientUpdatedAt || 0);
+              const localAt = Number(state && state._updatedAt || 0);
+              if (!remoteState) return;
+              if (remoteAt > localAt) {
+                isApplyingRemote = true;
+                state = remoteState;
+                // Ensure defaults added by loader exist
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+                syncAllUI();
+                isApplyingRemote = false;
+                setStatus('Synced from cloud');
+              }
+            } catch (e) { console.error(e); }
+          });
+        } catch (e) {
+          console.error(e);
+          setStatus('Cloud sync unavailable');
+        }
+      }
+
+      async function uploadState(force) {
+        if (!userDocRef || !state) return;
+        const payload = {
+          state,
+          clientUpdatedAt: Number(state._updatedAt || Date.now()),
+          updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+        };
+        await userDocRef.set(payload, { merge: true });
+        setStatus('Synced');
       }
 
       let state = loadState();
@@ -829,6 +915,7 @@
       const debugImportBtn = document.getElementById('debug-import-btn');
       const resetBtn = document.getElementById('reset-btn');
       const backfillTermsBtn = document.getElementById('backfill-terms-btn');
+      const syncNowBtn = document.getElementById('sync-now-btn');
 
       // reports
       const scoresCanvas = document.getElementById('scores-chart');
@@ -1030,6 +1117,8 @@
         syncAllUI();
         if (appSchoolNameEl) appSchoolNameEl.textContent = state.schoolName || 'Homeschool Grading Calculator';
         if (schoolNameInput) schoolNameInput.value = state.schoolName || '';
+        // Initialize cloud sync (no-op if config not filled)
+        initFirebaseSync();
       }
 
       function syncAllUI() {
@@ -2580,6 +2669,15 @@
       document.querySelectorAll('#backfill-terms-btn').forEach(btn => {
         if (btn) btn.addEventListener('click', doBackfillTerms);
       });
+
+      if (syncNowBtn) {
+        syncNowBtn.addEventListener('click', async () => {
+          await initFirebaseSync();
+          if (userDocRef) {
+            try { await uploadState(true); } catch (_) { setStatus('Sync failed'); return; }
+          }
+        });
+      }
 
       // Wire Export to Excel (CSV) button
       if (exportExcelBtn) {

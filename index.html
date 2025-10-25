@@ -6,15 +6,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Homeschool Grading App</title>
   <link rel="stylesheet" href="styles.css">
-
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.46.1/dist/umd/supabase.js"></script>
 </head>
 
 <body>
   <header class="app-header">
     <div class="brand">
-      <div class="brand-mark">A+</div>
+      <div class="brand-mark"><span>A</span><span class="logo-plus">+</span></div>
       <div class="brand-text">
-        <h1 id="app-school-name">Homeschool Grading</h1>
+        <h1 id="app-school-name">Homeschool Grading Calculator</h1>
       </div>
     </div>
     <nav class="tabs" role="tablist" aria-label="Primary">
@@ -77,40 +77,26 @@
           </div>
           <form id="terms-form" class="terms-grid"></form>
           <div class="form-actions">
+            <button id="auto-generate-terms" class="btn outline">Auto Generate Terms</button>
             <button id="save-terms" class="btn primary">Save Terms</button>
           </div>
         </section>
 
         <section class="card span-2">
           <div class="card-head">
-            <h2>Clear Assignments</h2>
+            <h2>Data</h2>
           </div>
-          <p class="subtitle">Remove all assignments. This cannot be undone.</p>
+          <p class="subtitle">Save/Import data, debug import sample data, clear assignments, and reset.</p>
           <div class="card-actions">
-            <button id="clear-assignments-btn" class="btn outline">Clear All Assignments</button>
-          </div>
-        </section>
-
-        <section class="card span-2">
-          <div class="card-head">
-            <h2>Export / Import Data</h2>
-          </div>
-          <p class="subtitle">Backup or restore your data as a JSON file.</p>
-          <div class="card-actions">
-            <button id="export-btn" class="btn outline">Export JSON</button>
-            <button id="import-btn" class="btn outline">Import JSON</button>
+            <button id="save-btn" class="btn outline">Save</button>
+            <button id="import-btn" class="btn outline">Import</button>
             <button id="export-excel-btn" class="btn outline">Export to Excel</button>
+            <button id="debug-import-btn" class="btn outline">Debug Import</button>
+            <button id="clear-assignments-btn" class="btn outline">Clear All Assignments</button>
+            <button id="backfill-terms-btn" class="btn outline">Backfill Terms</button>
+            <button id="sync-now-btn" class="btn outline">Sync Now</button>
+            <button id="reset-btn" class="btn outline">Reset</button>
             <input id="hidden-file-input" type="file" accept="application/json" hidden>
-          </div>
-        </section>
-
-        <section class="card span-2">
-          <div class="card-head">
-            <h2>Debug Data</h2>
-          </div>
-          <p class="subtitle">Generate sample assignments across all terms for all students and subjects.</p>
-          <div class="form-actions">
-            <button id="debug-generate-btn" class="btn primary">Generate Debug Data</button>
           </div>
         </section>
       </div>
@@ -132,16 +118,20 @@
               <select id="assignment-subject" required></select>
             </label>
             <label>
-              <span>Total Questions</span>
-              <input type="number" id="assignment-total" min="1" required placeholder="e.g., 20">
+              <span>Date</span>
+              <input type="date" id="assignment-date" required>
             </label>
             <label>
               <span>Total Correct</span>
               <input type="number" id="assignment-correct" min="0" required placeholder="e.g., 18">
             </label>
             <label>
-              <span>Date</span>
-              <input type="date" id="assignment-date" required>
+              <span>Total Questions</span>
+              <input type="number" id="assignment-total" min="1" required placeholder="e.g., 20">
+            </label>
+            <label>
+              <span>Percent</span>
+              <input type="number" id="assignment-percent" min="0" step="0.1" placeholder="e.g., 92.5">
             </label>
             <div class="form-actions">
               <button type="submit" class="btn primary">Add Assignment</button>
@@ -153,6 +143,10 @@
           <div class="card-head">
             <h2>Assignment History</h2>
             <div class="card-actions">
+              <label>
+                <span class="sr-only">Filter Student</span>
+                <select id="assignments-student-filter"></select>
+              </label>
               <label>
                 <span class="sr-only">Filter Subject</span>
                 <select id="assignments-subject-filter"></select>
@@ -180,6 +174,7 @@
               <tbody></tbody>
             </table>
           </div>
+          <div class="pagination" id="assignments-pager"></div>
         </section>
       </div>
     </section>
@@ -194,38 +189,24 @@
                 <span class="sr-only">Select term</span>
                 <select id="term-filter"></select>
               </label>
-              <div id="student-filters"></div>
             </div>
           </div>
+          <div id="student-filters" class="card-actions" style="margin-top:8px;"></div>
           <canvas id="scores-chart" height="140"></canvas>
         </section>
 
-        <section class="card">
-          <div class="card-head">
-            <h2>Average by Day of Week</h2>
-          </div>
-          <div class="table-wrap">
-            <table class="table" id="weekday-avg-table">
-              <thead>
-                <tr>
-                  <th>Day</th>
-                  <th>Average %</th>
-                  <th>Letter</th>
-                </tr>
-              </thead>
-              <tbody></tbody>
-            </table>
+        <section class="card span-2">
+          <div class="card-actions" style="justify-content:center; min-height: 40px; align-items:center;">
+            <button id="student-prev" class="btn outline" aria-label="Previous student">◀</button>
+            <span id="student-current" style="min-width: 160px; text-align:center; font-weight:600;"></span>
+            <button id="student-next" class="btn outline" aria-label="Next student">▶</button>
           </div>
         </section>
 
-        <section class="card chart-card">
+        <section class="card chart-card" id="filtered-card">
           <div class="card-head">
             <h2>Filtered Performance</h2>
             <div class="card-actions">
-              <label>
-                <span class="sr-only">Select student</span>
-                <select id="filter-student"></select>
-              </label>
               <label>
                 <span class="sr-only">Select subject</span>
                 <select id="filter-subject"></select>
@@ -239,10 +220,6 @@
           <div class="card-head">
             <h2>Report Cards</h2>
             <div class="card-actions">
-              <label>
-                <span class="sr-only">Select student</span>
-                <select id="report-student"></select>
-              </label>
               <button id="print-report" class="btn outline">Print</button>
             </div>
           </div>
@@ -256,7 +233,7 @@
     <span id="status-text">Ready</span>
   </footer>
 
-  <script src="app.js"></script>
+  <script src="scripts.js"></script>
 </body>
 
 </html>

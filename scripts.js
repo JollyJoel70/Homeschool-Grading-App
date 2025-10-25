@@ -1,10 +1,13 @@
-// Guard against missing global hook referenced by inline onload
-if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'function') {
-  window.solveSimpleChallenge = function () { };
-}
-
 (function () {
   const STORAGE_KEY = "homeschool_grading_v1";
+  // Supabase configuration (fill with your project's values)
+  const SUPABASE_URL = 'YOUR_SUPABASE_URL';
+  const SUPABASE_ANON_KEY = 'YOUR_SUPABASE_ANON_KEY';
+  let supabaseClient = null;
+  let supabaseReady = false;
+  let clientId = null;
+  let supabaseChannel = null;
+  let isApplyingRemote = false;
 
   const defaultTerms = () => {
     const year = new Date().getFullYear();
@@ -31,21 +34,107 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) return {
-        students: [], subjects: [], assignments: [], terms: defaultTerms(), years: [], currentYearId: undefined, schoolName: 'Homeschool Grading'
+        students: [], subjects: [], assignments: [], terms: defaultTerms(), years: [], currentYearId: undefined, schoolName: 'Homeschool Grading Calculator'
       };
       const parsed = JSON.parse(raw);
       parsed.terms = (parsed.terms && parsed.terms.length === 4) ? parsed.terms : defaultTerms();
-      if (!parsed.schoolName) parsed.schoolName = 'Homeschool Grading';
+      if (!parsed.schoolName) parsed.schoolName = 'Homeschool Grading Calculator';
       return parsed;
     } catch (e) {
       console.error(e);
-      return { students: [], subjects: [], assignments: [], terms: defaultTerms(), years: [], currentYearId: undefined, schoolName: 'Homeschool Grading' };
+      return { students: [], subjects: [], assignments: [], terms: defaultTerms(), years: [], currentYearId: undefined, schoolName: 'Homeschool Grading Calculator' };
     }
   }
 
   function saveState() {
+    try { state._updatedAt = Date.now(); } catch (_) { }
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    if (supabaseClient && supabaseReady && !isApplyingRemote) {
+      uploadState().catch(() => { /* ignore */ });
+    }
     setStatus("Saved");
+  }
+
+  function supabaseConfigLooksValid(url, key) {
+    if (!url || !key) return false;
+    if (/^YOUR_/i.test(url) || /^YOUR_/i.test(key)) return false;
+    if (typeof window !== 'undefined' && (!window.supabase || !window.supabase.createClient)) return false;
+    return true;
+  }
+
+  async function initSupabaseSync() {
+    try {
+      const btn = document.getElementById('sync-now-btn');
+      if (!supabaseConfigLooksValid(SUPABASE_URL, SUPABASE_ANON_KEY)) {
+        if (btn) btn.disabled = true;
+        return;
+      }
+      if (supabaseReady && supabaseClient) return;
+      // Create/reuse a stable client id to identify this browser's data row
+      clientId = localStorage.getItem('homeschool_client_id');
+      if (!clientId) { clientId = cryptoRandomId(); localStorage.setItem('homeschool_client_id', clientId); }
+      supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+      supabaseReady = true;
+      if (btn) btn.disabled = false;
+      // Fetch existing state for this client
+      const { data, error } = await supabaseClient
+        .from('homeschool_grading')
+        .select('state, client_updated_at')
+        .eq('client_id', clientId)
+        .maybeSingle();
+      if (error && error.code !== 'PGRST116') { console.error(error); }
+      if (data && data.state) {
+        const remoteAt = Number(data.client_updated_at || 0);
+        const localAt = Number(state && state._updatedAt || 0);
+        if (remoteAt > localAt) {
+          isApplyingRemote = true;
+          state = data.state;
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+          syncAllUI();
+          isApplyingRemote = false;
+          setStatus('Synced from cloud');
+        }
+      }
+      // Realtime subscription to changes for this client_id
+      try {
+        supabaseChannel = supabaseClient.channel('public:homeschool_grading')
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'homeschool_grading', filter: `client_id=eq.${clientId}` }, (payload) => {
+            try {
+              const row = payload.new || payload.record || {};
+              const remoteState = row.state;
+              const remoteAt = Number(row.client_updated_at || 0);
+              const localAt = Number(state && state._updatedAt || 0);
+              if (!remoteState) return;
+              if (remoteAt > localAt) {
+                isApplyingRemote = true;
+                state = remoteState;
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+                syncAllUI();
+                isApplyingRemote = false;
+                setStatus('Synced from cloud');
+              }
+            } catch (e) { console.error(e); }
+          })
+          .subscribe((status) => { /* no-op */ });
+      } catch (e) { console.error(e); }
+    } catch (e) {
+      console.error(e);
+      setStatus('Cloud sync unavailable');
+    }
+  }
+
+  async function uploadState(force) {
+    if (!supabaseClient || !clientId || !state) return;
+    const payload = {
+      client_id: clientId,
+      state,
+      client_updated_at: Number(state._updatedAt || Date.now())
+    };
+    const { error } = await supabaseClient
+      .from('homeschool_grading')
+      .upsert(payload, { onConflict: 'client_id' });
+    if (error) { console.error(error); setStatus('Sync failed'); return; }
+    setStatus('Synced');
   }
 
   let state = loadState();
@@ -74,36 +163,50 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
   const asgPercent = document.getElementById('assignment-percent');
   // term select removed; compute from date
   const assignmentsTableBody = document.querySelector('#assignments-table tbody');
+  const assignmentsStudentFilter = document.getElementById('assignments-student-filter');
   const assignmentsMonthFilter = document.getElementById('assignments-month-filter');
   const assignmentsSubjectFilter = document.getElementById('assignments-subject-filter');
+  const assignmentsPageSize = document.getElementById('assignments-page-size');
+  const assignmentsPager = document.getElementById('assignments-pager');
+  if (state.assignmentsPageSize == null) state.assignmentsPageSize = 10;
 
   // terms
   const termsForm = document.getElementById('terms-form');
   const resetTermsBtn = document.getElementById('reset-terms');
   const saveTermsBtn = document.getElementById('save-terms');
+  const autoGenTermsBtn = document.getElementById('auto-generate-terms');
   const yearSelect = document.getElementById('year-select');
   const addYearBtn = document.getElementById('add-year-btn');
 
   // export/import
-  const exportBtn = document.getElementById('export-btn');
   const importBtn = document.getElementById('import-btn');
   const hiddenFileInput = document.getElementById('hidden-file-input');
   const exportExcelBtn = document.getElementById('export-excel-btn');
+  // new data card buttons
+  const saveBtn = document.getElementById('save-btn');
+  const debugImportBtn = document.getElementById('debug-import-btn');
+  const resetBtn = document.getElementById('reset-btn');
+  const backfillTermsBtn = document.getElementById('backfill-terms-btn');
+  const syncNowBtn = document.getElementById('sync-now-btn');
 
   // reports
   const scoresCanvas = document.getElementById('scores-chart');
   const studentFilters = document.getElementById('student-filters');
   const termFilter = document.getElementById('term-filter');
-  const weekdayAvgTableBody = document.querySelector('#weekday-avg-table tbody');
   const filteredChartCanvas = document.getElementById('filtered-chart');
-  const filterStudentSelect = document.getElementById('filter-student');
+  // removed: filterStudentSelect
   const filterSubjectSelect = document.getElementById('filter-subject');
   const appSchoolNameEl = document.getElementById('app-school-name');
   const schoolForm = document.getElementById('school-form');
   const schoolNameInput = document.getElementById('school-name-input');
-  const reportStudentSelect = document.getElementById('report-student');
+  // removed: reportStudentSelect
   const reportCardContent = document.getElementById('report-card-content');
   const printReportBtn = document.getElementById('print-report');
+  // student nav below performance card
+  const studentPrevBtn = document.getElementById('student-prev');
+  const studentNextBtn = document.getElementById('student-next');
+  const studentCurrentLabel = document.getElementById('student-current');
+  const filteredCardEl = document.getElementById('filtered-card');
   // debug/clear
   const debugGenerateBtn = document.getElementById('debug-generate-btn');
   const clearAssignmentsBtn = document.getElementById('clear-assignments-btn');
@@ -223,12 +326,24 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
     }
   }
 
+  // Parse YYYY-MM-DD as a local Date (no UTC offset applied)
+  function parseIsoDateLocal(iso) {
+    if (!iso) return new Date(NaN);
+    const parts = String(iso).split('-');
+    const y = parseInt(parts[0], 10);
+    const m = parseInt(parts[1], 10) - 1;
+    const d = parseInt(parts[2], 10);
+    return new Date(y, m, d);
+  }
+
   function termIdForDate(terms, dateStr) {
-    const d = new Date(dateStr);
+    const d = parseIsoDateLocal(dateStr);
     for (const t of terms) {
-      if (new Date(t.start) <= d && d <= new Date(t.end)) return t.id;
+      const ts = parseIsoDateLocal(t.start);
+      const te = parseIsoDateLocal(t.end);
+      if (ts <= d && d <= te) return t.id;
     }
-    return terms[0]?.id;
+    return undefined;
   }
 
   function getActiveTerms() {
@@ -236,9 +351,20 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
     return y ? y.terms : state.terms;
   }
 
+  function getAllTerms() {
+    const out = [];
+    (state.years || []).forEach(y => {
+      (y.terms || []).forEach(t => out.push(t));
+    });
+    (state.terms || []).forEach(t => {
+      if (!out.some(x => x.id === t.id)) out.push(t);
+    });
+    return out;
+  }
+
   function formatDateDisplay(isoDate) {
     if (!isoDate) return '';
-    const d = new Date(isoDate);
+    const d = parseIsoDateLocal(isoDate);
     const mm = String(d.getMonth() + 1).padStart(2, '0');
     const dd = String(d.getDate()).padStart(2, '0');
     const yy = String(d.getFullYear()).slice(-2);
@@ -261,8 +387,10 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
     asgDate.value = todayStr();
     setDefaultMonthFilter();
     syncAllUI();
-    if (appSchoolNameEl) appSchoolNameEl.textContent = state.schoolName || 'Homeschool Grading';
+    if (appSchoolNameEl) appSchoolNameEl.textContent = state.schoolName || 'Homeschool Grading Calculator';
     if (schoolNameInput) schoolNameInput.value = state.schoolName || '';
+    // Initialize cloud sync (no-op if config not filled)
+    initSupabaseSync();
   }
 
   function syncAllUI() {
@@ -281,10 +409,13 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
 
     populateSelect(asgStudent, state.students, 'Select student');
     populateSelect(asgSubject, state.subjects, 'Select subject');
-    populateSelect(reportStudentSelect, [{ id: 'all', name: 'All Students' }, ...state.students], 'Select student');
+    // removed: report student dropdown
     populateTermFilter();
     populateAssignmentsSubjectFilter();
+    populateAssignmentsStudentFilter();
     populateReportFilters();
+    // Ensure a selected student exists
+    ensureSelectedStudentExists();
 
     renderAssignmentsTable();
     renderTermsEditor();
@@ -307,9 +438,11 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
   function renderAssignmentsTable() {
     assignmentsTableBody.innerHTML = '';
     const month = (assignmentsMonthFilter && assignmentsMonthFilter.value) ? assignmentsMonthFilter.value : currentMonthStr();
+    const studentIdFilter = (assignmentsStudentFilter && assignmentsStudentFilter.value) ? assignmentsStudentFilter.value : 'all';
     const subj = (assignmentsSubjectFilter && assignmentsSubjectFilter.value) ? assignmentsSubjectFilter.value : 'all';
     let rows = [...state.assignments]
       .filter(a => (a.date || '').startsWith(month))
+      .filter(a => studentIdFilter === 'all' || a.studentId === studentIdFilter)
       .filter(a => subj === 'all' || a.subjectId === subj);
 
     // Apply sorting if configured
@@ -321,7 +454,7 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
     rows.sort((a, b) => {
       switch (sortKey) {
         case 'date':
-          return cmpNum(new Date(a.date).getTime(), new Date(b.date).getTime());
+          return cmpNum(parseIsoDateLocal(a.date).getTime(), parseIsoDateLocal(b.date).getTime());
         case 'student': {
           const sa = state.students.find(s => s.id === a.studentId)?.name || '';
           const sb = state.students.find(s => s.id === b.studentId)?.name || '';
@@ -341,23 +474,46 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
           return cmpNum(computePercent(a.correct, a.total), computePercent(b.correct, b.total));
         }
         case 'grade': {
-          // Sort by percent for grade column
           return cmpNum(computePercent(a.correct, a.total), computePercent(b.correct, b.total));
         }
         case 'term': {
-          const ta = state.terms.find(t => t.id === a.termId)?.name || '';
-          const tb = state.terms.find(t => t.id === b.termId)?.name || '';
+          const ta = getAllTerms().find(t => t.id === a.termId)?.name || '';
+          const tb = getAllTerms().find(t => t.id === b.termId)?.name || '';
           return cmpStr(ta, tb);
         }
         default:
           return 0;
       }
     });
-    rows.forEach(a => {
+    // Pagination
+    const pageSize = Math.max(1, parseInt((state.assignmentsPageSize != null ? state.assignmentsPageSize : (assignmentsPageSize && assignmentsPageSize.value)), 10) || 10);
+    if (assignmentsPageSize) assignmentsPageSize.value = String(pageSize);
+    const page = state.assignmentsPage || 1;
+    const total = rows.length;
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const currentPage = Math.min(Math.max(1, page), totalPages);
+    state.assignmentsPage = currentPage;
+    const startIdx = (currentPage - 1) * pageSize;
+    const pageRows = rows.slice(startIdx, startIdx + pageSize);
+
+    // Render rows for current page
+    pageRows.forEach(a => {
       const student = state.students.find(s => s.id === a.studentId)?.name || '—';
       const subject = state.subjects.find(su => su.id === a.subjectId)?.name || '—';
       const percent = computePercent(a.correct, a.total);
       const grade = letterGrade(percent);
+      const activeTerms = getActiveTerms();
+      let computedTermId = termIdForDate(activeTerms, a.date);
+      let termName = activeTerms.find(t => t.id === computedTermId)?.name;
+      if (!termName) {
+        const anyTerms = getAllTerms();
+        const fromAll = termIdForDate(anyTerms, a.date);
+        termName = anyTerms.find(t => t.id === fromAll)?.name || '';
+      }
+      if (!a.termId && computedTermId) {
+        a.termId = computedTermId;
+        saveState();
+      }
       const tr = document.createElement('tr');
       tr.innerHTML = `
         <td>${formatDateDisplay(a.date)}</td>
@@ -366,10 +522,10 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
         <td>${a.correct}/${a.total}</td>
         <td>${percent}%</td>
         <td>${grade}</td>
-        <td>${state.terms.find(t => t.id === a.termId)?.name || ''}</td>
+        <td>${termName}</td>
         <td>
-          <button class="btn subtle" data-action="edit" data-id="${a.id}">Edit</button>
-          <button class="btn subtle" data-action="remove" data-id="${a.id}">Remove</button>
+          <button class=\"btn subtle\" data-action=\"edit\" data-id=\"${a.id}\">Edit</button>
+          <button class=\"btn subtle\" data-action=\"remove\" data-id=\"${a.id}\">Remove</button>
         </td>
       `;
       tr.querySelector('[data-action="remove"]').addEventListener('click', () => {
@@ -393,13 +549,69 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
         a.date = newDateIso;
         a.total = newTotal;
         a.correct = newCorrect;
-        a.termId = termIdForDate(state.terms, a.date);
+        a.termId = termIdForDate(getActiveTerms(), a.date);
         saveState();
         renderAssignmentsTable();
         refreshReports();
       });
       assignmentsTableBody.appendChild(tr);
     });
+
+    // Render pagination controls
+    if (assignmentsPager) {
+      assignmentsPager.innerHTML = '';
+      const numbers = document.createElement('div');
+      numbers.className = 'pager-numbers';
+      const sizeWrap = document.createElement('div');
+      sizeWrap.className = 'pager-size';
+
+      const makeBtn = (label, pageNum, disabled = false, active = false) => {
+        const b = document.createElement('button');
+        b.className = 'btn outline';
+        b.textContent = label;
+        if (active) b.style.filter = 'brightness(1.25)';
+        if (disabled) b.disabled = true;
+        b.addEventListener('click', () => {
+          state.assignmentsPage = pageNum;
+          renderAssignmentsTable();
+        });
+        return b;
+      };
+
+      numbers.appendChild(makeBtn('Prev', Math.max(1, currentPage - 1), currentPage === 1));
+      const maxButtons = 7;
+      let start = Math.max(1, currentPage - 3);
+      let end = Math.min(totalPages, start + maxButtons - 1);
+      start = Math.max(1, Math.min(start, end - maxButtons + 1));
+      for (let p = start; p <= end; p++) {
+        const btn = makeBtn(String(p), p, false, p === currentPage);
+        if (p === currentPage) btn.classList.add('active');
+        numbers.appendChild(btn);
+      }
+      numbers.appendChild(makeBtn('Next', Math.min(totalPages, currentPage + 1), currentPage === totalPages));
+
+      // Page size select on bottom-right
+      const label = document.createElement('label');
+      label.innerHTML = '<span class=\"sr-only\">Rows per page</span>';
+      const sel = document.createElement('select');
+      sel.innerHTML = '<option value=\"10\">10</option><option value=\"25\">25</option><option value=\"50\">50</option>';
+      sel.value = String(pageSize);
+      sel.addEventListener('change', () => {
+        state.assignmentsPageSize = parseInt(sel.value, 10) || 10;
+        if (assignmentsPageSize) assignmentsPageSize.value = String(state.assignmentsPageSize);
+        try { saveState(); } catch (_) { }
+        state.assignmentsPage = 1;
+        renderAssignmentsTable();
+      });
+      label.appendChild(sel);
+      sizeWrap.appendChild(label);
+
+      // Layout: [spacer][numbers centered][size right]
+      const spacer = document.createElement('div');
+      assignmentsPager.appendChild(spacer);
+      assignmentsPager.appendChild(numbers);
+      assignmentsPager.appendChild(sizeWrap);
+    }
   }
 
   function renderTermsEditor() {
@@ -412,9 +624,9 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
       const grid = document.createElement('div');
       grid.className = 'term-edit';
       grid.innerHTML = `
-        <label class="full"><span>Name</span><input type="text" value="${escapeHtml(t.name)}" data-idx="${idx}" data-field="name"></label>
-        <label><span>Start</span><input type="date" value="${t.start}" data-idx="${idx}" data-field="start"></label>
-        <label><span>End</span><input type="date" value="${t.end}" data-idx="${idx}" data-field="end"></label>
+        <label class=\"full\"><span>Name</span><input type=\"text\" value=\"${escapeHtml(t.name)}\" data-idx=\"${idx}\" data-field=\"name\"></label>
+        <label><span>Start</span><input type=\"date\" value=\"${t.start}\" data-idx=\"${idx}\" data-field=\"start\"></label>
+        <label><span>End</span><input type=\"date\" value=\"${t.end}\" data-idx=\"${idx}\" data-field=\"end\"></label>
       `;
       const heading = document.createElement('h3');
       heading.textContent = escapeHtml(t.name);
@@ -447,8 +659,8 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
 
   function schoolYearNameFromTerms(terms) {
     if (!terms || terms.length === 0) return 'School Year';
-    const start = new Date(terms[0].start);
-    const end = new Date(terms[terms.length - 1].end);
+    const start = parseIsoDateLocal(terms[0].start);
+    const end = parseIsoDateLocal(terms[terms.length - 1].end);
     return `${start.getFullYear()}-${end.getFullYear()}`;
   }
 
@@ -463,17 +675,17 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
     const rangeTerms = terms && terms.length ? { start: terms[0].start, end: terms[terms.length - 1].end } : null;
     const inRange = (a) => {
       if (!rangeTerms) return true;
-      const d = new Date(a.date);
-      return new Date(rangeTerms.start) <= d && d <= new Date(rangeTerms.end);
+      const d = parseIsoDateLocal(a.date);
+      return parseIsoDateLocal(rangeTerms.start) <= d && d <= parseIsoDateLocal(rangeTerms.end);
     };
     const rows = state.assignments.filter(inRange).map(a => {
       const student = state.students.find(s => s.id === a.studentId)?.name || '';
       const subject = state.subjects.find(su => su.id === a.subjectId)?.name || '';
       const pct = computePercent(a.correct, a.total);
       const grade = letterGrade(pct);
-      const termName = (function(){
+      const termName = (function () {
         const tId = a.termId || termIdForDate(getActiveTerms(), a.date);
-        const t = state.terms.find(t => t.id === tId);
+        const t = getAllTerms().find(t => t.id === tId);
         return t ? t.name : '';
       })();
       return [
@@ -486,7 +698,7 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
         termName
       ];
     });
-    const header = ['Date','Student','Subject','Result','Percent','Grade','Term'];
+    const header = ['Date', 'Student', 'Subject', 'Result', 'Percent', 'Grade', 'Term'];
     const lines = [header, ...rows].map(cols => cols.map(escapeCsvCell).join(','));
     const csv = lines.join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
@@ -532,10 +744,14 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
     populateSimpleSelect(assignmentsSubjectFilter, opts);
   }
 
+  function populateAssignmentsStudentFilter() {
+    if (!assignmentsStudentFilter) return;
+    const opts = [{ value: 'all', label: 'All Students' }, ...state.students.map(s => ({ value: s.id, label: s.name }))];
+    populateSimpleSelect(assignmentsStudentFilter, opts);
+  }
+
   function populateReportFilters() {
-    const studentOpts = [{ value: 'all', label: 'All Students' }, ...state.students.map(s => ({ value: s.id, label: s.name }))];
     const subjectOpts = [{ value: 'all', label: 'All Subjects' }, ...state.subjects.map(s => ({ value: s.id, label: s.name }))];
-    populateSimpleSelect(filterStudentSelect, studentOpts);
     populateSimpleSelect(filterSubjectSelect, subjectOpts);
   }
 
@@ -576,8 +792,19 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
     e.preventDefault();
     const studentId = asgStudent.value;
     const subjectId = asgSubject.value;
-    const total = parseInt(asgTotal.value, 10);
-    const correct = parseInt(asgCorrect.value, 10);
+    let total = parseInt(asgTotal.value, 10);
+    let correct = parseInt(asgCorrect.value, 10);
+    const percentVal = parseFloat(asgPercent.value);
+    // If percent is provided, compute totals prioritizing existing total if present
+    if (!Number.isNaN(percentVal)) {
+      const pct = Math.max(0, percentVal);
+      // Use provided total or fall back to 20
+      total = Number.isNaN(total) || total < 1 ? 20 : total;
+      correct = Math.round((pct / 100) * total);
+      if (correct < 0) correct = 0;
+      asgTotal.value = String(total);
+      asgCorrect.value = String(correct);
+    }
     const date = asgDate.value || todayStr();
     const termId = termIdForDate(getActiveTerms(), date);
     if (!studentId || !subjectId || Number.isNaN(total) || Number.isNaN(correct)) { setStatus('Fill all fields'); return; }
@@ -587,9 +814,10 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
     // Preserve student, subject, date; clear totals only
     asgTotal.value = '';
     asgCorrect.value = '';
-    // Put cursor back into Total Questions
-    if (asgTotal && typeof asgTotal.focus === 'function') {
-      asgTotal.focus();
+    asgPercent.value = '';
+    // Put cursor into Total Correct for faster entry
+    if (asgCorrect && typeof asgCorrect.focus === 'function') {
+      asgCorrect.focus();
     }
     // Ensure history filter shows the newly added assignment
     if (assignmentsMonthFilter) assignmentsMonthFilter.value = (date || '').slice(0, 7);
@@ -600,7 +828,22 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
     refreshReports();
   });
 
-  // If a Percent input exists, auto-calc it from totals when both are valid
+  // When percent changes, auto-calc totals on the fly
+  if (asgPercent) {
+    const recalcFromPercent = () => {
+      const p = parseFloat(asgPercent.value);
+      if (Number.isNaN(p)) return;
+      let t = parseInt(asgTotal.value, 10);
+      if (Number.isNaN(t) || t < 1) t = 20;
+      const c = Math.round((Math.max(0, p) / 100) * t);
+      asgTotal.value = String(t);
+      asgCorrect.value = String(c);
+    };
+    asgPercent.addEventListener('input', recalcFromPercent);
+    asgPercent.addEventListener('change', recalcFromPercent);
+  }
+
+  // Auto-fill percent from totals when both numbers are present
   (function setupPercentAutoFill() {
     if (!asgPercent || !asgTotal || !asgCorrect) return;
     const updatePercent = () => {
@@ -631,12 +874,27 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
     });
   }
 
+  if (assignmentsPageSize) {
+    assignmentsPageSize.addEventListener('change', () => {
+      state.assignmentsPageSize = parseInt(assignmentsPageSize.value, 10) || 10;
+      try { saveState(); } catch (_) { }
+      state.assignmentsPage = 1;
+      renderAssignmentsTable();
+    });
+  }
+
+  if (assignmentsStudentFilter) {
+    assignmentsStudentFilter.addEventListener('change', () => {
+      renderAssignmentsTable();
+    });
+  }
+
   // Sorting: click table headers to toggle sort
   (function setupAssignmentsSorting() {
     const thead = document.querySelector('#assignments-table thead');
     if (!thead) return;
     const headers = Array.from(thead.querySelectorAll('th'));
-    const keys = ['date','student','subject','result','percent','grade','term','actions'];
+    const keys = ['date', 'student', 'subject', 'result', 'percent', 'grade', 'term', 'actions'];
     headers.forEach((th, idx) => {
       const key = keys[idx];
       if (!key || key === 'actions') return;
@@ -656,16 +914,11 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
   if (termFilter) {
     termFilter.addEventListener('change', () => {
       refreshChart();
-      renderWeekdayAverages();
       refreshFilteredChart();
     });
   }
 
-  if (filterStudentSelect) {
-    filterStudentSelect.addEventListener('change', () => {
-      refreshFilteredChart();
-    });
-  }
+  // removed: filterStudentSelect change handler
 
   if (filterSubjectSelect) {
     filterSubjectSelect.addEventListener('change', () => {
@@ -673,14 +926,11 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
     });
   }
 
-  // Wire Export to Excel (CSV) button
-  if (exportExcelBtn) {
-    exportExcelBtn.addEventListener('click', exportCurrentYearCsv);
-  }
-
   // Debug data generation
-  if (debugGenerateBtn) {
-    debugGenerateBtn.addEventListener('click', () => {
+  if (debugImportBtn) {
+    debugImportBtn.addEventListener('click', () => {
+      const ok = confirm('Debug Import will generate a large set of sample data. Continue?');
+      if (!ok) return;
       if (state.students.length === 0 || state.subjects.length === 0) {
         setStatus('Add at least one student and subject first');
         return;
@@ -692,8 +942,8 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
         let created = 0;
         state.subjects.forEach(subject => {
           for (let i = 0; i < perSubject; i++) {
-            const term = state.terms[i % state.terms.length];
-            const date = randomDateInRange(new Date(term.start), new Date(term.end), rng);
+            const term = getActiveTerms()[i % getActiveTerms().length];
+            const date = randomDateInRange(parseIsoDateLocal(term.start), parseIsoDateLocal(term.end), rng);
             const total = 10 + Math.floor(rng() * 21);
             const correct = Math.max(0, Math.min(total, Math.floor(total * (0.5 + rng() * 0.5))));
             state.assignments.push({
@@ -703,15 +953,15 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
               total,
               correct,
               date: fmtDate(date),
-              termId: termIdForDate(state.terms, fmtDate(date))
+              termId: termIdForDate(getActiveTerms(), fmtDate(date))
             });
             created++;
           }
         });
         while (created < totalAssignments) {
           const subject = state.subjects[Math.floor(rng() * state.subjects.length)];
-          const term = state.terms[Math.floor(rng() * state.terms.length)];
-          const date = randomDateInRange(new Date(term.start), new Date(term.end), rng);
+          const term = getActiveTerms()[Math.floor(rng() * getActiveTerms().length)];
+          const date = randomDateInRange(parseIsoDateLocal(term.start), parseIsoDateLocal(term.end), rng);
           const total = 10 + Math.floor(rng() * 21);
           const correct = Math.max(0, Math.min(total, Math.floor(total * (0.5 + rng() * 0.5))));
           state.assignments.push({
@@ -721,7 +971,7 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
             total,
             correct,
             date: fmtDate(date),
-            termId: termIdForDate(state.terms, fmtDate(date))
+            termId: termIdForDate(getActiveTerms(), fmtDate(date))
           });
           created++;
         }
@@ -735,6 +985,8 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
 
   if (clearAssignmentsBtn) {
     clearAssignmentsBtn.addEventListener('click', () => {
+      const ok = confirm('Clear ALL assignments? This cannot be undone.');
+      if (!ok) return;
       state.assignments = [];
       saveState();
       renderAssignmentsTable();
@@ -787,6 +1039,79 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
     refreshReports();
   });
 
+  if (autoGenTermsBtn) {
+    autoGenTermsBtn.addEventListener('click', () => {
+      // Prompt for start/end dates (mm/dd/yy or mm/dd/yyyy)
+      const active = getActiveTerms();
+      const suggestedStart = active && active.length ? formatDateDisplay(active[0].start) : '';
+      const suggestedEnd = active && active.length ? formatDateDisplay(active[active.length - 1].end) : '';
+      const startDisp = prompt('School start date (mm/dd/yy)', suggestedStart);
+      if (!startDisp) { setStatus('Cancelled'); return; }
+      const startIso = parseDateDisplay(startDisp);
+      if (!startIso) { setStatus('Invalid start date'); return; }
+      const endDisp = prompt('School end date (mm/dd/yy)', suggestedEnd);
+      if (!endDisp) { setStatus('Cancelled'); return; }
+      const endIso = parseDateDisplay(endDisp);
+      if (!endIso) { setStatus('Invalid end date'); return; }
+      const s = parseIsoDateLocal(startIso);
+      const e = parseIsoDateLocal(endIso);
+      if (!(s instanceof Date) || !(e instanceof Date) || isNaN(s.getTime()) || isNaN(e.getTime())) { setStatus('Invalid dates'); return; }
+      if (e < s) { setStatus('End date must be on/after start date'); return; }
+
+      function addDays(date, days) {
+        return new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
+      }
+      function diffDaysInclusive(a, b) {
+        const MS = 24 * 60 * 60 * 1000;
+        const aStart = new Date(a.getFullYear(), a.getMonth(), a.getDate());
+        const bStart = new Date(b.getFullYear(), b.getMonth(), b.getDate());
+        return Math.floor((bStart - aStart) / MS) + 1;
+      }
+
+      const totalDays = diffDaysInclusive(s, e);
+      if (totalDays < 4) { setStatus('Range too short (min 4 days)'); return; }
+
+      const base = Math.floor(totalDays / 4);
+      const extra = totalDays % 4;
+      const lens = [base, base, base, base];
+      for (let i = 0; i < extra; i++) lens[i] += 1;
+
+      const pieces = [];
+      let currentStart = s;
+      for (let i = 0; i < 4; i++) {
+        const segLen = Math.max(1, lens[i]);
+        const segEnd = addDays(currentStart, segLen - 1);
+        pieces.push({ start: currentStart, end: segEnd });
+        currentStart = addDays(segEnd, 1);
+      }
+      // Clamp last end to provided end date just in case
+      pieces[3].end = e;
+
+      const y = (state.years || []).find(y => y.id === getCurrentYearId());
+      const termsArr = y ? y.terms : state.terms;
+      // Ensure there are 4 term objects
+      if (!termsArr || termsArr.length !== 4) {
+        if (y) y.terms = defaultTerms(); else state.terms = defaultTerms();
+      }
+      const target = y ? y.terms : state.terms;
+      target.forEach((t, idx) => {
+        t.name = `Term ${idx + 1}`;
+        t.start = fmtDate(pieces[idx].start);
+        t.end = fmtDate(pieces[idx].end);
+      });
+      // Optionally update the year display name
+      if (y) {
+        y.name = schoolYearNameFromTerms(target);
+      }
+      saveState();
+      // Update UI
+      populateYearSelect();
+      renderTermsEditor();
+      refreshReports();
+      setStatus('Terms auto-generated');
+    });
+  }
+
   if (addYearBtn) {
     addYearBtn.addEventListener('click', () => {
       const baseYear = new Date().getFullYear();
@@ -820,65 +1145,11 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
       // re-evaluate term filter since terms changed scope
       populateTermFilter();
       refreshChart();
-      renderWeekdayAverages();
       refreshFilteredChart();
     });
   }
 
   // Export / Import
-  exportBtn.addEventListener('click', async () => {
-    try {
-      const now = new Date();
-      const y = now.getFullYear();
-      const mm = String(now.getMonth() + 1).padStart(2, '0');
-      const dd = String(now.getDate()).padStart(2, '0');
-      const hh = String(now.getHours()).padStart(2, '0');
-      const mi = String(now.getMinutes()).padStart(2, '0');
-      const defaultName = `homeschool-grades_${y}-${mm}-${dd}_${hh}${mi}.json`;
-
-      const json = JSON.stringify(state, null, 2);
-      const canUseNative = !!window.showSaveFilePicker && (window.isSecureContext === true);
-      if (canUseNative) {
-        try {
-          const handle = await window.showSaveFilePicker({
-            suggestedName: defaultName,
-            types: [{ description: 'JSON Files', accept: { 'application/json': ['.json'] } }]
-          });
-          const writable = await handle.createWritable();
-          await writable.write(json);
-          await writable.close();
-        } catch (e) {
-          // Fallback to anchor download on NotAllowed/Security
-          if (e && (e.name === 'NotAllowedError' || e.name === 'SecurityError' || /activation is required/i.test(String(e.message || '')))) {
-            const blob = new Blob([json], { type: 'application/json' });
-            const a = document.createElement('a');
-            const url = URL.createObjectURL(blob);
-            a.href = url; a.download = defaultName;
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-            URL.revokeObjectURL(url);
-          } else {
-            throw e;
-          }
-        }
-      } else {
-        const blob = new Blob([json], { type: 'application/json' });
-        const a = document.createElement('a');
-        const url = URL.createObjectURL(blob);
-        a.href = url; a.download = defaultName;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(url);
-      }
-      setStatus('Exported JSON');
-    } catch (e) {
-      console.error(e);
-      setStatus('Export failed');
-    }
-  });
-
   importBtn.addEventListener('click', async () => {
     const canUseNative = !!window.showOpenFilePicker && (window.isSecureContext === true);
     if (!canUseNative) {
@@ -896,6 +1167,7 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
       handleImportedJson(text);
     } catch (e) {
       console.error(e);
+      // Fallback to hidden input on user-activation or permission errors
       if (e && (e.name === 'NotAllowedError' || e.name === 'SecurityError' || /activation is required/i.test(String(e.message || '')))) {
         hiddenFileInput.value = '';
         hiddenFileInput.click();
@@ -945,13 +1217,9 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
     // If the canvas is inside a chart-card, fill available height beneath header
     let cssHeight = parseInt(getComputedStyle(canvas).height, 10) || 300;
     const container = canvas.closest('.chart-card');
-    if (container) {
-      const header = container.querySelector('.card-head');
-      const containerH = container.clientHeight || 300;
-      const headerH = header ? header.clientHeight : 0;
-      const padding = 16; // inner padding approximation
-      cssHeight = Math.max(200, containerH - headerH - padding);
-    }
+    // Keep charts at a stable height; avoid dynamic resizing on interactions
+    // Previously we tried to fill remaining height, which caused growth
+    // when sibling content changed. We now prefer a fixed canvas CSS height.
     const height = cssHeight;
     if (canvas.width !== Math.floor(width * dpr) || canvas.height !== Math.floor(height * dpr)) {
       canvas.width = Math.floor(width * dpr);
@@ -1048,16 +1316,14 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
   }
   function renderStudentFilters() {
     studentFilters.innerHTML = '';
-    const allBtn = document.createElement('button');
-    allBtn.className = 'btn outline';
-    allBtn.textContent = 'All';
-    allBtn.addEventListener('click', () => { refreshChart(); reportStudentSelect.value = state.students[0]?.id || ''; if (reportStudentSelect.value) buildReportCard(reportStudentSelect.value); });
-    studentFilters.appendChild(allBtn);
+    const selId = getSelectedStudentId();
+    // Render quick chips for jumping, but also sync selected student
     state.students.forEach(s => {
       const b = document.createElement('button');
       b.className = 'btn outline';
       b.textContent = s.name;
-      b.addEventListener('click', () => { refreshChart(s.id); reportStudentSelect.value = s.id; buildReportCard(s.id); });
+      if (s.id === selId) b.style.filter = 'brightness(1.25)';
+      b.addEventListener('click', () => { applySelectedStudent(s.id); });
       studentFilters.appendChild(b);
     });
   }
@@ -1079,22 +1345,22 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
     const termRange = selectedTermId === 'all' ? null : activeTerms.find(t => t.id === selectedTermId);
     const inTerm = (a) => {
       if (!termRange) return true;
-      const d = new Date(a.date);
-      return new Date(termRange.start) <= d && d <= new Date(termRange.end);
+      const d = parseIsoDateLocal(a.date);
+      return parseIsoDateLocal(termRange.start) <= d && d <= parseIsoDateLocal(termRange.end);
     };
 
     const students = studentId ? state.students.filter(s => s.id === studentId) : state.students;
     const allFiltered = state.assignments.filter(a => inTerm(a));
 
     const weekKeyForDate = (dateStr) => {
-      const d = new Date(dateStr);
+      const d = parseIsoDateLocal(dateStr);
       const ym = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
       const wk = weekOfMonth(d);
       return `${ym}-W${wk}`;
     };
     const labelKeysSet = new Set();
     allFiltered
-      .map(a => ({ a, d: new Date(a.date) }))
+      .map(a => ({ a, d: parseIsoDateLocal(a.date) }))
       .sort((x, y) => x.d - y.d)
       .forEach(({ a }) => labelKeysSet.add(weekKeyForDate(a.date)));
     const labelKeys = Array.from(labelKeysSet.values());
@@ -1125,40 +1391,59 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
     drawChart(scoresCanvas, labels, datasets);
   }
 
+  // removed height sync with weekday card
+
+  function ensureSelectedStudentExists() {
+    // Initialize or clean up selected student
+    const all = state.students || [];
+    if (!all.length) {
+      state.selectedStudentId = undefined;
+      if (studentCurrentLabel) studentCurrentLabel.textContent = '';
+      return;
+    }
+    if (!state.selectedStudentId || !all.some(s => s.id === state.selectedStudentId)) {
+      state.selectedStudentId = all[0].id;
+      saveState();
+    }
+    if (studentCurrentLabel) {
+      const nm = all.find(s => s.id === state.selectedStudentId)?.name || '';
+      studentCurrentLabel.textContent = nm;
+    }
+  }
+
+  function getSelectedStudentId() {
+    return state.selectedStudentId || (state.students && state.students[0] ? state.students[0].id : undefined);
+  }
+
+  function applySelectedStudent(studentId) {
+    if (!studentId) return;
+    state.selectedStudentId = studentId;
+    saveState();
+    // Update label
+    if (studentCurrentLabel) {
+      const nm = state.students.find(s => s.id === studentId)?.name || '';
+      studentCurrentLabel.textContent = nm;
+    }
+    // Update report student select & filtered student select
+
+    // Re-render dependent sections
+    refreshChart(studentId);
+
+    refreshFilteredChart();
+    buildReportCard(studentId);
+  }
+
   function weekOfMonth(date) {
     const day = date.getDate();
     return Math.floor((day - 1) / 7) + 1;
   }
 
   function monthNameShort(m) {
-    const names = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
     return names[(m - 1) % 12];
   }
 
-  function renderWeekdayAverages() {
-    if (!weekdayAvgTableBody) return;
-    const selectedTermId = termFilter ? termFilter.value : 'all';
-    const activeTerms = getActiveTerms();
-    const termRange = selectedTermId === 'all' ? null : activeTerms.find(t => t.id === selectedTermId);
-    const inTerm = (a) => {
-      if (!termRange) return true;
-      const d = new Date(a.date);
-      return new Date(termRange.start) <= d && d <= new Date(termRange.end);
-    };
-    const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-    const buckets = Array.from({ length: 7 }, () => []);
-    state.assignments.filter(a => inTerm(a)).forEach(a => {
-      const d = new Date(a.date).getDay();
-      buckets[d].push(a);
-    });
-    weekdayAvgTableBody.innerHTML = '';
-    buckets.forEach((arr, i) => {
-      const pct = arr.length ? Math.round((arr.reduce((s, a) => s + (a.correct / a.total), 0) / arr.length) * 1000) / 10 : null;
-      const tr = document.createElement('tr');
-      tr.innerHTML = `<td>${days[i]}</td><td>${pct == null ? '—' : pct + '%'}</td><td>${pct == null ? '—' : letterGrade(pct)}</td>`;
-      weekdayAvgTableBody.appendChild(tr);
-    });
-  }
+  // removed: renderWeekdayAverages
 
   function refreshFilteredChart() {
     if (!filteredChartCanvas) return;
@@ -1167,10 +1452,10 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
     const termRange = selectedTermId === 'all' ? null : activeTerms.find(t => t.id === selectedTermId);
     const inTerm = (a) => {
       if (!termRange) return true;
-      const d = new Date(a.date);
-      return new Date(termRange.start) <= d && d <= new Date(termRange.end);
+      const d = parseIsoDateLocal(a.date);
+      return parseIsoDateLocal(termRange.start) <= d && d <= parseIsoDateLocal(termRange.end);
     };
-    const studentId = filterStudentSelect ? filterStudentSelect.value : 'all';
+    const studentId = getSelectedStudentId() || 'all';
     const subjectId = filterSubjectSelect ? filterSubjectSelect.value : 'all';
 
     const filtered = state.assignments.filter(a => inTerm(a))
@@ -1178,13 +1463,13 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
       .filter(a => subjectId === 'all' || a.subjectId === subjectId);
 
     const weekKeyForDate = (dateStr) => {
-      const d = new Date(dateStr);
+      const d = parseIsoDateLocal(dateStr);
       const ym = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
       const wk = weekOfMonth(d);
       return `${ym}-W${wk}`;
     };
     const keys = Array.from(new Set(filtered
-      .map(a => ({ a, d: new Date(a.date) }))
+      .map(a => ({ a, d: parseIsoDateLocal(a.date) }))
       .sort((x, y) => x.d - y.d)
       .map(({ a }) => weekKeyForDate(a.date))));
 
@@ -1209,47 +1494,54 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
   function buildReportCard(studentId) {
     const student = state.students.find(s => s.id === studentId);
     if (!student) { reportCardContent.innerHTML = '<p>Select a student</p>'; return; }
+    const studentAssignments = state.assignments.filter(a => a.studentId === studentId);
+    const subjectsWithData = state.subjects.filter(sub => studentAssignments.some(a => a.subjectId === sub.id));
     const bySubjectByTerm = new Map();
-    state.subjects.forEach(sub => bySubjectByTerm.set(sub.id, new Map()));
-    state.terms.forEach((t, i) => {
-      state.subjects.forEach(sub => bySubjectByTerm.get(sub.id).set(t.id, []));
+    subjectsWithData.forEach(sub => bySubjectByTerm.set(sub.id, new Map()));
+    getActiveTerms().forEach((t, i) => {
+      subjectsWithData.forEach(sub => bySubjectByTerm.get(sub.id).set(t.id, []));
     });
-    state.assignments.filter(a => a.studentId === studentId).forEach(a => {
-      const term = a.termId || termIdForDate(state.terms, a.date);
+    studentAssignments.forEach(a => {
+      const term = a.termId || termIdForDate(getActiveTerms(), a.date);
       if (!bySubjectByTerm.has(a.subjectId)) bySubjectByTerm.set(a.subjectId, new Map());
       if (!bySubjectByTerm.get(a.subjectId).has(term)) bySubjectByTerm.get(a.subjectId).set(term, []);
       bySubjectByTerm.get(a.subjectId).get(term).push(a);
     });
 
-    function avgPercent(assignments) {
+    function pctWeighted(assignments) {
       if (!assignments || assignments.length === 0) return null;
-      const pct = assignments.reduce((sum, a) => sum + (a.correct / a.total), 0) / assignments.length;
-      return Math.round(pct * 1000) / 10;
+      const sums = assignments.reduce((acc, a) => { acc.c += a.correct; acc.t += a.total; return acc; }, { c: 0, t: 0 });
+      if (sums.t <= 0) return null;
+      return Math.round((sums.c / sums.t) * 1000) / 10;
     }
 
     const overallAgg = [];
     const rc = document.createElement('div');
     rc.className = 'report-card-inner';
-    rc.innerHTML = `<div class="rc-student">${escapeHtml(student.name)}</div>`;
+    rc.innerHTML = `<div class=\"rc-student\">${escapeHtml(student.name)}</div>`;
     const grid = document.createElement('div');
     grid.className = 'rc-grid';
-    state.terms.forEach((t) => {
+    getActiveTerms().forEach((t) => {
       const termBox = document.createElement('div');
       termBox.className = 'rc-term';
       termBox.innerHTML = `<h3>${escapeHtml(t.name)}</h3>`;
       const subjectsRows = document.createElement('div');
-      const termPercents = [];
-      state.subjects.forEach(sub => {
+      let termSumC = 0;
+      let termSumT = 0;
+      subjectsWithData.forEach(sub => {
         const arr = bySubjectByTerm.get(sub.id)?.get(t.id) || [];
-        const pct = avgPercent(arr);
+        const pct = pctWeighted(arr);
         const letter = pct == null ? '—' : letterGrade(pct);
-        if (pct != null) termPercents.push(pct);
+        if (arr && arr.length) {
+          const sums = arr.reduce((acc, a) => { acc.c += a.correct; acc.t += a.total; return acc; }, { c: 0, t: 0 });
+          termSumC += sums.c; termSumT += sums.t;
+        }
         const row = document.createElement('div');
         row.className = 'rc-row';
         row.innerHTML = `<span>${escapeHtml(sub.name)}</span><span>${pct == null ? '—' : pct + '%'} ${letter == '—' ? '' : '(' + letter + ')'}</span>`;
         subjectsRows.appendChild(row);
       });
-      const termAvg = termPercents.length ? Math.round(termPercents.reduce((a,b)=>a+b,0)/termPercents.length*10)/10 : null;
+      const termAvg = termSumT > 0 ? Math.round((termSumC / termSumT) * 1000) / 10 : null;
       if (termAvg != null) overallAgg.push(termAvg);
       const rowAvg = document.createElement('div');
       rowAvg.className = 'rc-row';
@@ -1260,8 +1552,7 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
     });
     rc.appendChild(grid);
     // Compute per-subject full-year grades and GPA
-    const studentAssignments = state.assignments.filter(a => a.studentId === studentId);
-    const subjectYear = state.subjects.map(sub => {
+    const subjectYear = subjectsWithData.map(sub => {
       const arr = studentAssignments.filter(a => a.subjectId === sub.id);
       if (arr.length === 0) return null;
       const sums = arr.reduce((acc, a) => { acc.c += a.correct; acc.t += a.total; return acc; }, { c: 0, t: 0 });
@@ -1281,7 +1572,8 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
     overall.className = 'rc-term';
     overall.innerHTML = `<h3>Overall Year Summary</h3>`;
     const overallRows = document.createElement('div');
-    const yearAvg = overallAgg.length ? Math.round(overallAgg.reduce((a,b)=>a+b,0)/overallAgg.length*10)/10 : null;
+    const sumsAll = studentAssignments.reduce((acc, a) => { acc.c += a.correct; acc.t += a.total; return acc; }, { c: 0, t: 0 });
+    const yearAvg = sumsAll.t > 0 ? Math.round((sumsAll.c / sumsAll.t) * 1000) / 10 : null;
     const yearLetter = yearAvg == null ? '—' : letterGrade(yearAvg);
     const gpaText = gpaAvg == null ? '—' : gpaAvg.toFixed(2);
     const rowPct = document.createElement('div');
@@ -1306,21 +1598,24 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
   }
 
   function refreshReports() {
-    populateSelect(reportStudentSelect, state.students, 'Select student');
+    
     refreshChart();
-    renderWeekdayAverages();
     populateReportFilters();
+    // Apply selected student across below-cards
+    const selId = getSelectedStudentId();
     refreshFilteredChart();
-    const current = reportStudentSelect.value || state.students[0]?.id;
-    if (current) buildReportCard(current);
+    const current = selId || state.students[0]?.id;
+    if (current) {
+      buildReportCard(current);
+    } else {
+      reportCardContent.innerHTML = '<p>Select a student</p>';
+    }
   }
 
-  reportStudentSelect.addEventListener('change', (e) => {
-    buildReportCard(e.target.value);
-  });
+  // removed: reportStudentSelect change handler
 
   printReportBtn.addEventListener('click', () => {
-    const studentId = reportStudentSelect.value || state.students[0]?.id;
+    const studentId = getSelectedStudentId() || state.students[0]?.id;
     if (!studentId) { setStatus('Select a student'); return; }
     openPrintableReport(studentId);
   });
@@ -1334,8 +1629,9 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
 
     function avgPct(arr) {
       if (!arr || arr.length === 0) return null;
-      const pct = arr.reduce((sum, a) => sum + (a.correct / a.total), 0) / arr.length;
-      return Math.round(pct * 1000) / 10;
+      const sums = arr.reduce((acc, a) => { acc.c += a.correct; acc.t += a.total; return acc; }, { c: 0, t: 0 });
+      if (sums.t <= 0) return null;
+      return Math.round((sums.c / sums.t) * 1000) / 10;
     }
 
     const bySubject = state.subjects.map(sub => {
@@ -1343,19 +1639,20 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
         return avgPct(
           state.assignments.filter(a => {
             if (a.studentId !== studentId || a.subjectId !== sub.id) return false;
-            const d = new Date(a.date);
-            return new Date(t.start) <= d && d <= new Date(t.end);
+            const d = parseIsoDateLocal(a.date);
+            return parseIsoDateLocal(t.start) <= d && d <= parseIsoDateLocal(t.end);
           })
         );
       });
       const perTermLetters = perTerm.map(v => (v == null ? null : letterGrade(v)));
       const perTermGpa = perTermLetters.map(l => (l == null ? null : letterToGpa(l)));
-      const vals = perTerm.filter(v => v != null);
-      const year = vals.length ? Math.round(vals.reduce((a,b)=>a+b,0)/vals.length*10)/10 : null;
+      const allArr = state.assignments.filter(a => a.studentId === studentId && a.subjectId === sub.id);
+      const sums = allArr.reduce((acc, a) => { acc.c += a.correct; acc.t += a.total; return acc; }, { c: 0, t: 0 });
+      const year = sums.t > 0 ? Math.round((sums.c / sums.t) * 1000) / 10 : null;
       const yearLetter = year == null ? null : letterGrade(year);
       const yearGpa = yearLetter == null ? null : letterToGpa(yearLetter);
-      return { name: sub.name, perTerm, perTermLetters, perTermGpa, year, yearLetter, yearGpa };
-    });
+      return { name: sub.name, perTerm, perTermLetters, perTermGpa, year, yearLetter, yearGpa, hasData: sums.t > 0 };
+    }).filter(r => r.hasData);
 
     // Overall GPA (year) across subjects with data
     const gpaOverall = bySubject.filter(s => s.yearGpa != null).length
@@ -1367,10 +1664,23 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
       if (bySubject.some(s => s.perTermGpa[i] != null)) { currentTermIndex = i; break; }
     }
     const gpaCurrent = currentTermIndex >= 0
-      ? (function(){ const xs = bySubject.map(s => s.perTermGpa[currentTermIndex]).filter(v => v != null); return xs.length ? Math.round((xs.reduce((a,b)=>a+b,0)/xs.length)*100)/100 : null; })()
+      ? (function () { const xs = bySubject.map(s => s.perTermGpa[currentTermIndex]).filter(v => v != null); return xs.length ? Math.round((xs.reduce((a, b) => a + b, 0) / xs.length) * 100) / 100 : null; })()
       : null;
 
-    const overallYearPct = (function(){ const vals = bySubject.map(s => s.year).filter(v => v != null); return vals.length ? Math.round(vals.reduce((a,b)=>a+b,0)/vals.length) : null; })();
+    const sumsAll = state.assignments.filter(a => a.studentId === studentId).reduce((acc, a) => { acc.c += a.correct; acc.t += a.total; return acc; }, { c: 0, t: 0 });
+    const overallYearPctFloat = sumsAll.t > 0 ? ((sumsAll.c / sumsAll.t) * 100) : null;
+    const overallYearPct = overallYearPctFloat == null ? null : Math.round(overallYearPctFloat);
+
+    // Per-term totals across all subjects for this student
+    const termTotals = terms.map(t => {
+      const arr = state.assignments.filter(a => {
+        if (a.studentId !== studentId) return false;
+        const d = parseIsoDateLocal(a.date);
+        return parseIsoDateLocal(t.start) <= d && d <= parseIsoDateLocal(t.end);
+      });
+      const sums = arr.reduce((acc, a) => { acc.c += a.correct; acc.t += a.total; return acc; }, { c: 0, t: 0 });
+      return sums.t > 0 ? (sums.c / sums.t) * 100 : null;
+    });
 
     const doc = window.open('', '_blank');
     if (!doc) return;
@@ -1407,16 +1717,15 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
     <div class="cell"><span class="label">School Year</span>${yearName}</div>
     <div class="cell"><span class="label">Generated</span>${formatDateDisplay(todayStr())}</div>
   </div>
-  <div class="info" style="border-top:none; grid-template-columns: 1fr 1fr 1fr;">
+  <div class="info" style="border-top:none; grid-template-columns: 1fr 1fr;">
     <div class="cell"><span class="label">Overall GPA</span>${gpaOverall == null ? '' : gpaOverall.toFixed(2)}</div>
     <div class="cell"><span class="label">Overall %</span>${overallYearPct == null ? '' : overallYearPct + '%'}</div>
-    <div class="cell"><span class="label">Current Term GPA</span>${gpaCurrent == null ? '' : gpaCurrent.toFixed(2)}</div>
   </div>
   <table>
     <thead>
       <tr>
         <th style="width:40%">Course</th>
-        ${terms.map((t,i)=>`<th class=\"center\">T${i+1}</th>`).join('')}
+        ${terms.map((t, i) => `<th class=\"center\">T${i + 1}</th>`).join('')}
         <th class="center">Year</th>
       </tr>
     </thead>
@@ -1427,6 +1736,15 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
           ${terms.map((t, i) => `<td class=\"center\">${row.perTerm[i] == null ? '' : Math.round(row.perTerm[i]) + '% (' + row.perTermLetters[i] + ')'}</td>`).join('')}
           <td class="center">${row.year == null ? '' : Math.round(row.year) + '% (' + row.yearLetter + ')'}</td>
         </tr>`).join('')}
+        <tr>
+          <td><strong>Totals</strong></td>
+          ${terms.map((t, i) => {
+          const v = termTotals[i];
+          const l = v == null ? null : letterGrade(v);
+          return `<td class=\"center\"><strong>${v == null ? '' : Math.round(v) + '% (' + l + ')'}</strong></td>`;
+        }).join('')}
+          <td class="center"><strong>${overallYearPct == null ? '' : Math.round(overallYearPct) + '% (' + letterGrade(overallYearPct) + ')'}</strong></td>
+        </tr>
     </tbody>
   </table>
 </body>
@@ -1435,8 +1753,231 @@ if (typeof window !== 'undefined' && typeof window.solveSimpleChallenge !== 'fun
     doc.document.close();
   }
 
+  // Shared data handlers so legacy and data-card buttons both work
+  async function doSaveJson() {
+    try {
+      const now = new Date();
+      const y = now.getFullYear();
+      const mm = String(now.getMonth() + 1).padStart(2, '0');
+      const dd = String(now.getDate()).padStart(2, '0');
+      const hh = String(now.getHours()).padStart(2, '0');
+      const mi = String(now.getMinutes()).padStart(2, '0');
+      const defaultName = `homeschool-grades_${y}-${mm}-${dd}_${hh}${mi}.json`;
+      const json = JSON.stringify(state, null, 2);
+      if (window.showSaveFilePicker) {
+        const handle = await window.showSaveFilePicker({
+          suggestedName: defaultName,
+          types: [{ description: 'JSON Files', accept: { 'application/json': ['.json'] } }]
+        });
+        const writable = await handle.createWritable();
+        await writable.write(json);
+        await writable.close();
+      } else {
+        const blob = new Blob([json], { type: 'application/json' });
+        const a = document.createElement('a');
+        const url = URL.createObjectURL(blob);
+        a.href = url; a.download = defaultName;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      }
+      setStatus('Saved');
+    } catch (e) {
+      console.error(e);
+      setStatus('Save failed');
+    }
+  }
+
+  async function doImportJson() {
+    try {
+      if (window.showOpenFilePicker) {
+        const [handle] = await window.showOpenFilePicker({
+          types: [{ description: 'JSON Files', accept: { 'application/json': ['.json'] } }],
+          multiple: false
+        });
+        const file = await handle.getFile();
+        const text = await file.text();
+        handleImportedJson(text);
+      } else {
+        hiddenFileInput.value = '';
+        hiddenFileInput.click();
+      }
+    } catch (e) {
+      console.error(e);
+      setStatus('Import cancelled');
+    }
+  }
+
+  function doGenerateDebugData() {
+    if (state.students.length === 0 || state.subjects.length === 0) {
+      setStatus('Add at least one student and subject first');
+      return;
+    }
+    const ok = confirm('Generate sample assignments across all terms for all students and subjects?');
+    if (!ok) return;
+    const rng = seededRandom();
+    state.students.forEach(student => {
+      const totalAssignments = 100;
+      const perSubject = Math.max(1, Math.floor(totalAssignments / Math.max(1, state.subjects.length)));
+      let created = 0;
+      state.subjects.forEach(subject => {
+        for (let i = 0; i < perSubject; i++) {
+          const term = getActiveTerms()[i % getActiveTerms().length];
+          const date = randomDateInRange(parseIsoDateLocal(term.start), parseIsoDateLocal(term.end), rng);
+          const total = 10 + Math.floor(rng() * 21);
+          const correct = Math.max(0, Math.min(total, Math.floor(total * (0.5 + rng() * 0.5))));
+          state.assignments.push({
+            id: cryptoRandomId(),
+            studentId: student.id,
+            subjectId: subject.id,
+            total,
+            correct,
+            date: fmtDate(date),
+            termId: termIdForDate(getActiveTerms(), fmtDate(date))
+          });
+          created++;
+        }
+      });
+      while (created < totalAssignments) {
+        const subject = state.subjects[Math.floor(rng() * state.subjects.length)];
+        const term = getActiveTerms()[Math.floor(rng() * getActiveTerms().length)];
+        const date = randomDateInRange(parseIsoDateLocal(term.start), parseIsoDateLocal(term.end), rng);
+        const total = 10 + Math.floor(rng() * 21);
+        const correct = Math.max(0, Math.min(total, Math.floor(total * (0.5 + rng() * 0.5))));
+        state.assignments.push({
+          id: cryptoRandomId(),
+          studentId: student.id,
+          subjectId: subject.id,
+          total,
+          correct,
+          date: fmtDate(date),
+          termId: termIdForDate(getActiveTerms(), fmtDate(date))
+        });
+        created++;
+      }
+    });
+    saveState();
+    renderAssignmentsTable();
+    refreshReports();
+    setStatus('Debug data generated');
+  }
+
+  function doClearAllAssignments() {
+    const ok = confirm('Clear ALL assignments? This cannot be undone.');
+    if (!ok) return;
+    state.assignments = [];
+    saveState();
+    renderAssignmentsTable();
+    refreshReports();
+    setStatus('Assignments cleared');
+  }
+
+  function doReset() {
+    const ok = confirm('Reset will clear ALL data and restore defaults. Continue?');
+    if (!ok) return;
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+    } catch (e) {
+      console.error(e);
+    }
+    state = loadState();
+    saveState();
+    // Update header and input immediately
+    if (appSchoolNameEl) appSchoolNameEl.textContent = state.schoolName || 'Homeschool Grading Calculator';
+    if (schoolNameInput) schoolNameInput.value = state.schoolName || '';
+    syncAllUI();
+    setStatus('App reset');
+  }
+
+  function doBackfillTerms() {
+    const terms = getAllTerms();
+    let updated = 0;
+    state.assignments.forEach(a => {
+      const d = parseIsoDateLocal(a.date);
+      const match = terms.find(t => {
+        const ts = parseIsoDateLocal(t.start);
+        const te = parseIsoDateLocal(t.end);
+        return ts <= d && d <= te;
+      });
+      const newId = match ? match.id : undefined;
+      if ((a.termId || undefined) !== newId) {
+        a.termId = newId;
+        updated++;
+      }
+    });
+    saveState();
+    renderAssignmentsTable();
+    refreshReports();
+    setStatus(updated ? `Backfilled ${updated} assignments` : 'No changes');
+  }
+
+  // Wire Save buttons (Data card Save and legacy Export JSON)
+  document.querySelectorAll('#save-btn, #export-btn').forEach(btn => {
+    if (btn) btn.addEventListener('click', doSaveJson);
+  });
+
+  // Wire Import buttons (Data card Import and legacy Import JSON)
+  document.querySelectorAll('#import-btn').forEach(btn => {
+    if (btn) btn.addEventListener('click', doImportJson);
+  });
+
+  // Hidden file input stays as-is for fallback
+
+  // Wire Debug buttons (Data card Debug Import and legacy Generate Debug Data)
+  document.querySelectorAll('#debug-import-btn, #debug-generate-btn').forEach(btn => {
+    if (btn) btn.addEventListener('click', doGenerateDebugData);
+  });
+
+  // Wire Clear All Assignments (both Data card and legacy card)
+  document.querySelectorAll('#clear-assignments-btn').forEach(btn => {
+    if (btn) btn.addEventListener('click', doClearAllAssignments);
+  });
+
+  // Wire Reset and Backfill Terms (Data card)
+  document.querySelectorAll('#reset-btn').forEach(btn => {
+    if (btn) btn.addEventListener('click', doReset);
+  });
+  document.querySelectorAll('#backfill-terms-btn').forEach(btn => {
+    if (btn) btn.addEventListener('click', doBackfillTerms);
+  });
+
+  if (syncNowBtn) {
+    syncNowBtn.addEventListener('click', async () => {
+      await initSupabaseSync();
+      try { await uploadState(true); } catch (_) { setStatus('Sync failed'); return; }
+    });
+  }
+
+  // Wire Export to Excel (CSV) button
+  if (exportExcelBtn) {
+    exportExcelBtn.addEventListener('click', exportCurrentYearCsv);
+  }
+
+  // Wire student nav buttons
+  if (studentPrevBtn) studentPrevBtn.addEventListener('click', (e) => {
+    e.preventDefault(); e.stopPropagation();
+    const list = state.students || [];
+    if (!list.length) return;
+    const sel = getSelectedStudentId();
+    const idx = Math.max(0, list.findIndex(s => s.id === sel));
+    const nextIdx = (idx - 1 + list.length) % list.length;
+    applySelectedStudent(list[nextIdx].id);
+    if (document.activeElement === studentPrevBtn && typeof studentPrevBtn.blur === 'function') studentPrevBtn.blur();
+  });
+  if (studentNextBtn) studentNextBtn.addEventListener('click', (e) => {
+    e.preventDefault(); e.stopPropagation();
+    const list = state.students || [];
+    if (!list.length) return;
+    const sel = getSelectedStudentId();
+    const idx = Math.max(0, list.findIndex(s => s.id === sel));
+    const nextIdx = (idx + 1) % list.length;
+    applySelectedStudent(list[nextIdx].id);
+    if (document.activeElement === studentNextBtn && typeof studentNextBtn.blur === 'function') studentNextBtn.blur();
+  });
+
   // Init
   init();
+  // After initial render, align heights once DOM settles
+
 })();
-
-
