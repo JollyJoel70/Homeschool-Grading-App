@@ -2078,7 +2078,12 @@
   // Auth button handlers
   if (authSignInBtn) authSignInBtn.addEventListener('click', async (e) => {
     e.preventDefault();
-    if (!supabaseClient) await initSupabaseSync();
+    if (!supabaseClient) {
+      await initSupabaseSync();
+      if (!supabaseClient && window.supabase && window.supabase.createClient) {
+        supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+      }
+    }
     const email = authEmailInput && authEmailInput.value.trim();
     const password = authPasswordInput && authPasswordInput.value;
     if (!email || !password) { setStatus('Enter email and password'); return; }
@@ -2095,7 +2100,12 @@
   });
   if (authSignUpBtn) authSignUpBtn.addEventListener('click', async (e) => {
     e.preventDefault();
-    if (!supabaseClient) await initSupabaseSync();
+    if (!supabaseClient) {
+      await initSupabaseSync();
+      if (!supabaseClient && window.supabase && window.supabase.createClient) {
+        supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+      }
+    }
     const email = authEmailInput && authEmailInput.value.trim();
     const password = authPasswordInput && authPasswordInput.value;
     if (!email || !password) { setStatus('Enter email and password'); return; }

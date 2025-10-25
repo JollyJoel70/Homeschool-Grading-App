@@ -6,7 +6,18 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Homeschool Grading App</title>
   <link rel="stylesheet" href="styles.css">
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.46.1/dist/umd/supabase.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.46.1/dist/umd/supabase.js"
+    crossorigin="anonymous"></script>
+  <script>
+    (function () {
+      if (!window.supabase) {
+        var s = document.createElement('script');
+        s.src = 'https://unpkg.com/@supabase/supabase-js@2.46.1/dist/umd/supabase.js';
+        s.crossOrigin = 'anonymous';
+        document.head.appendChild(s);
+      }
+    })();
+  </script>
 </head>
 
 <body>
