@@ -5,8 +5,8 @@
   const SUPABASE_ANON_KEY = 'YOUR_SUPABASE_ANON_KEY';
   let supabaseClient = null;
   let supabaseReady = false;
-  let clientId = null;
   let supabaseChannel = null;
+  let currentUserId = null;
   let isApplyingRemote = false;
 
   const defaultTerms = () => {
@@ -70,69 +70,83 @@
         return;
       }
       if (supabaseReady && supabaseClient) return;
-      // Create/reuse a stable client id to identify this browser's data row
-      clientId = localStorage.getItem('homeschool_client_id');
-      if (!clientId) { clientId = cryptoRandomId(); localStorage.setItem('homeschool_client_id', clientId); }
       supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
       supabaseReady = true;
       if (btn) btn.disabled = false;
-      // Fetch existing state for this client
-      const { data, error } = await supabaseClient
-        .from('homeschool_grading')
-        .select('state, client_updated_at')
-        .eq('client_id', clientId)
-        .maybeSingle();
-      if (error && error.code !== 'PGRST116') { console.error(error); }
-      if (data && data.state) {
-        const remoteAt = Number(data.client_updated_at || 0);
-        const localAt = Number(state && state._updatedAt || 0);
-        if (remoteAt > localAt) {
-          isApplyingRemote = true;
-          state = data.state;
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-          syncAllUI();
-          isApplyingRemote = false;
-          setStatus('Synced from cloud');
-        }
-      }
-      // Realtime subscription to changes for this client_id
-      try {
-        supabaseChannel = supabaseClient.channel('public:homeschool_grading')
-          .on('postgres_changes', { event: '*', schema: 'public', table: 'homeschool_grading', filter: `client_id=eq.${clientId}` }, (payload) => {
-            try {
-              const row = payload.new || payload.record || {};
-              const remoteState = row.state;
-              const remoteAt = Number(row.client_updated_at || 0);
-              const localAt = Number(state && state._updatedAt || 0);
-              if (!remoteState) return;
-              if (remoteAt > localAt) {
-                isApplyingRemote = true;
-                state = remoteState;
-                localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-                syncAllUI();
-                isApplyingRemote = false;
-                setStatus('Synced from cloud');
-              }
-            } catch (e) { console.error(e); }
-          })
-          .subscribe((status) => { /* no-op */ });
-      } catch (e) { console.error(e); }
+      // Initialize auth listener and attempt to restore session
+      const { data: { subscription } } = supabaseClient.auth.onAuthStateChange(async (_event, session) => {
+        currentUserId = session && session.user ? session.user.id : null;
+        updateAuthUi(session);
+        await setupDataSyncForUser();
+      });
+      // Restore session on load
+      const { data: sessionData } = await supabaseClient.auth.getSession();
+      currentUserId = sessionData && sessionData.session && sessionData.session.user ? sessionData.session.user.id : null;
+      updateAuthUi(sessionData ? sessionData.session : null);
+      await setupDataSyncForUser();
     } catch (e) {
       console.error(e);
       setStatus('Cloud sync unavailable');
     }
   }
 
+  async function setupDataSyncForUser() {
+    // Clear previous channel
+    try { if (supabaseChannel) { await supabaseClient.removeChannel(supabaseChannel); supabaseChannel = null; } } catch (_) { }
+    if (!currentUserId) { return; }
+    // Fetch existing state for this user
+    const { data, error } = await supabaseClient
+      .from('homeschool_grading')
+      .select('state, client_updated_at')
+      .eq('user_id', currentUserId)
+      .maybeSingle();
+    if (error && error.code !== 'PGRST116') { console.error(error); }
+    if (data && data.state) {
+      const remoteAt = Number(data.client_updated_at || 0);
+      const localAt = Number(state && state._updatedAt || 0);
+      if (remoteAt > localAt) {
+        isApplyingRemote = true;
+        state = data.state;
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+        syncAllUI();
+        isApplyingRemote = false;
+        setStatus('Synced from cloud');
+      }
+    }
+    // Subscribe to realtime updates for this user
+    try {
+      supabaseChannel = supabaseClient.channel('public:homeschool_grading_user')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'homeschool_grading', filter: `user_id=eq.${currentUserId}` }, (payload) => {
+          try {
+            const row = payload.new || payload.record || {};
+            const remoteState = row.state;
+            const remoteAt = Number(row.client_updated_at || 0);
+            const localAt = Number(state && state._updatedAt || 0);
+            if (!remoteState) return;
+            if (remoteAt > localAt) {
+              isApplyingRemote = true;
+              state = remoteState;
+              localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+              syncAllUI();
+              isApplyingRemote = false;
+              setStatus('Synced from cloud');
+            }
+          } catch (e) { console.error(e); }
+        })
+        .subscribe();
+    } catch (e) { console.error(e); }
+  }
+
   async function uploadState(force) {
-    if (!supabaseClient || !clientId || !state) return;
+    if (!supabaseClient || !currentUserId || !state) return;
     const payload = {
-      client_id: clientId,
+      user_id: currentUserId,
       state,
       client_updated_at: Number(state._updatedAt || Date.now())
     };
     const { error } = await supabaseClient
       .from('homeschool_grading')
-      .upsert(payload, { onConflict: 'client_id' });
+      .upsert(payload, { onConflict: 'user_id' });
     if (error) { console.error(error); setStatus('Sync failed'); return; }
     setStatus('Synced');
   }
@@ -210,10 +224,27 @@
   // debug/clear
   const debugGenerateBtn = document.getElementById('debug-generate-btn');
   const clearAssignmentsBtn = document.getElementById('clear-assignments-btn');
+  // auth UI
+  const authEmailInput = document.getElementById('auth-email');
+  const authPasswordInput = document.getElementById('auth-password');
+  const authSignInBtn = document.getElementById('auth-signin');
+  const authSignUpBtn = document.getElementById('auth-signup');
+  const authSignOutBtn = document.getElementById('auth-signout');
+  const authUserEmailLabel = document.getElementById('auth-user-email');
 
   function setStatus(msg) {
     statusText.textContent = msg;
     setTimeout(() => statusText.textContent = 'Ready', 1500);
+  }
+
+  function updateAuthUi(session) {
+    const email = session && session.user ? (session.user.email || '') : '';
+    if (authUserEmailLabel) authUserEmailLabel.textContent = email ? `Signed in: ${email}` : '';
+    if (authSignInBtn) authSignInBtn.disabled = !!email;
+    if (authSignUpBtn) authSignUpBtn.disabled = !!email;
+    if (authSignOutBtn) authSignOutBtn.disabled = !email;
+    const syncBtn = document.getElementById('sync-now-btn');
+    if (syncBtn) syncBtn.disabled = !email;
   }
 
   // Tabs
@@ -1979,5 +2010,34 @@
   // Init
   init();
   // After initial render, align heights once DOM settles
+
+  // Auth button handlers
+  if (authSignInBtn) authSignInBtn.addEventListener('click', async (e) => {
+    e.preventDefault();
+    if (!supabaseClient) await initSupabaseSync();
+    const email = authEmailInput && authEmailInput.value.trim();
+    const password = authPasswordInput && authPasswordInput.value;
+    if (!email || !password) { setStatus('Enter email and password'); return; }
+    const { error } = await supabaseClient.auth.signInWithPassword({ email, password });
+    if (error) { console.error(error); setStatus('Sign in failed'); return; }
+    setStatus('Signed in');
+  });
+  if (authSignUpBtn) authSignUpBtn.addEventListener('click', async (e) => {
+    e.preventDefault();
+    if (!supabaseClient) await initSupabaseSync();
+    const email = authEmailInput && authEmailInput.value.trim();
+    const password = authPasswordInput && authPasswordInput.value;
+    if (!email || !password) { setStatus('Enter email and password'); return; }
+    const { error } = await supabaseClient.auth.signUp({ email, password });
+    if (error) { console.error(error); setStatus('Sign up failed'); return; }
+    setStatus('Check email to confirm');
+  });
+  if (authSignOutBtn) authSignOutBtn.addEventListener('click', async (e) => {
+    e.preventDefault();
+    if (!supabaseClient) return;
+    const { error } = await supabaseClient.auth.signOut();
+    if (error) { console.error(error); setStatus('Sign out failed'); return; }
+    setStatus('Signed out');
+  });
 
 })();

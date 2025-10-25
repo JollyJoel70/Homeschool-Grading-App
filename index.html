@@ -27,6 +27,24 @@
   <main>
     <section id="settings" class="tab-panel" role="tabpanel" aria-labelledby="settings-tab">
       <div class="panel-grid">
+        <section class="card">
+          <h2>Account</h2>
+          <div class="card-actions">
+            <label>
+              <span class="sr-only">Email</span>
+              <input type="email" id="auth-email" placeholder="email@example.com">
+            </label>
+            <label>
+              <span class="sr-only">Password</span>
+              <input type="password" id="auth-password" placeholder="Password">
+            </label>
+            <button id="auth-signin" class="btn outline">Sign In</button>
+            <button id="auth-signup" class="btn outline">Sign Up</button>
+            <button id="auth-signout" class="btn outline">Sign Out</button>
+            <span id="auth-user-email" style="color: var(--muted);"></span>
+          </div>
+          <p class="subtitle">Sign in to enable cloud sync via Supabase.</p>
+        </section>
         <section class="card span-2">
           <div class="card-head">
             <h2>School Info</h2>
