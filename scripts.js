@@ -141,9 +141,9 @@
   }
 
   async function uploadState(force) {
-    if (!supabaseClient) { setStatus('Cloud not configured'); return false; }
-    if (!currentUserId) { setStatus('Sign in to sync'); return false; }
-    if (!state) { setStatus('Nothing to sync'); return false; }
+    if (!supabaseClient) { setStatus('Cloud not configured'); setCloudStatus && setCloudStatus('Cloud: not configured', false); return false; }
+    if (!currentUserId) { setStatus('Sign in to sync'); setCloudStatus && setCloudStatus('Cloud: not signed in', false); return false; }
+    if (!state) { setStatus('Nothing to sync'); setCloudStatus && setCloudStatus('Cloud: nothing to sync', false); return false; }
     const payload = {
       user_id: currentUserId,
       state,
@@ -2032,8 +2032,16 @@
         return;
       }
       await initSupabaseSync();
+      let timeoutId = setTimeout(() => {
+        // If still showing syncing after 6s, mark as timeout
+        if (cloudStatus && /syncing/i.test(String(cloudStatus.textContent || ''))) {
+          setStatus('Sync timeout');
+          setCloudStatus && setCloudStatus('Cloud: timeout', false);
+        }
+      }, 6000);
       try {
         const ok = await uploadState(true);
+        clearTimeout(timeoutId);
         if (!ok) return;
       } catch (e) {
         console.error(e);
