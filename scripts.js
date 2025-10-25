@@ -111,9 +111,11 @@
         syncAllUI();
         isApplyingRemote = false;
         setStatus('Synced from cloud');
-      setCloudStatus(`Cloud: ${new Date(remoteAt).toLocaleString()}`, true);
-    } else {
-      if (remoteAt) setCloudStatus(`Cloud: ${new Date(remoteAt).toLocaleString()}`, true);
+        setCloudStatus && setCloudStatus(`Cloud: ${new Date(remoteAt).toLocaleString()}`, true);
+      } else if (localAt > remoteAt) {
+        try { await uploadState(true); } catch (e) { console.error(e); }
+      } else {
+        if (remoteAt) setCloudStatus && setCloudStatus(`Cloud: ${new Date(remoteAt).toLocaleString()}`, true);
       }
     }
     // Subscribe to realtime updates for this user
@@ -465,11 +467,36 @@
   function init() {
     asgDate.value = todayStr();
     setDefaultMonthFilter();
+    try { autoSelectCurrentYear(); } catch (_) { }
     syncAllUI();
     if (appSchoolNameEl) appSchoolNameEl.textContent = state.schoolName || 'Homeschool Grading Calculator';
     if (schoolNameInput) schoolNameInput.value = state.schoolName || '';
     // Initialize cloud sync (no-op if config not filled)
     initSupabaseSync();
+  }
+
+  function autoSelectCurrentYear() {
+    if (!state || !Array.isArray(state.years) || state.years.length === 0) return;
+    const today = new Date();
+    const isInRange = (startIso, endIso) => {
+      const s = parseIsoDateLocal(startIso);
+      const e = parseIsoDateLocal(endIso);
+      if (!(s instanceof Date) || isNaN(s) || !(e instanceof Date) || isNaN(e)) return false;
+      const ts = new Date(s.getFullYear(), s.getMonth(), s.getDate()).getTime();
+      const te = new Date(e.getFullYear(), e.getMonth(), e.getDate()).getTime();
+      const t = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+      return ts <= t && t <= te;
+    };
+    let pick = state.years.find(y => {
+      if (!y || !Array.isArray(y.terms) || y.terms.length === 0) return false;
+      const first = y.terms[0];
+      const last = y.terms[y.terms.length - 1];
+      return isInRange(first.start, last.end);
+    });
+    if (pick && pick.id && state.currentYearId !== pick.id) {
+      state.currentYearId = pick.id;
+      try { saveState(); } catch (_) { }
+    }
   }
 
   function syncAllUI() {
