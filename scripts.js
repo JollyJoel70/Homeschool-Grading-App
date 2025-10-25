@@ -1,8 +1,8 @@
 (function () {
   const STORAGE_KEY = "homeschool_grading_v1";
   // Supabase configuration (fill with your project's values)
-  const SUPABASE_URL = 'YOUR_SUPABASE_URL';
-  const SUPABASE_ANON_KEY = 'YOUR_SUPABASE_ANON_KEY';
+  const SUPABASE_URL = 'https://qzpscevpffhsymgwglrt.supabase.co';
+  const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InF6cHNjZXZwZmZoc3ltZ3dnbHJ0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjEzOTgyODksImV4cCI6MjA3Njk3NDI4OX0.wnaL_zShSvpGrCSlq90or__NvgP9KKnyQuEPTUKaJi4';
   let supabaseClient = null;
   let supabaseReady = false;
   let supabaseChannel = null;
@@ -111,6 +111,9 @@
         syncAllUI();
         isApplyingRemote = false;
         setStatus('Synced from cloud');
+      setCloudStatus(`Cloud: ${new Date(remoteAt).toLocaleString()}`, true);
+    } else {
+      if (remoteAt) setCloudStatus(`Cloud: ${new Date(remoteAt).toLocaleString()}`, true);
       }
     }
     // Subscribe to realtime updates for this user
@@ -138,7 +141,9 @@
   }
 
   async function uploadState(force) {
-    if (!supabaseClient || !currentUserId || !state) return;
+    if (!supabaseClient) { setStatus('Cloud not configured'); return false; }
+    if (!currentUserId) { setStatus('Sign in to sync'); return false; }
+    if (!state) { setStatus('Nothing to sync'); return false; }
     const payload = {
       user_id: currentUserId,
       state,
@@ -146,9 +151,27 @@
     };
     const { error } = await supabaseClient
       .from('homeschool_grading')
-      .upsert(payload, { onConflict: 'user_id' });
-    if (error) { console.error(error); setStatus('Sync failed'); return; }
-    setStatus('Synced');
+      .upsert(payload, { onConflict: 'user_id' })
+      .select('client_updated_at')
+      .single();
+    if (error) { console.error(error); setStatus(`Sync failed: ${error.message || 'error'}`); setCloudStatus('Cloud: write failed', false); return false; }
+    // Verify write by reading back timestamp
+    try {
+      const { data, error: readErr } = await supabaseClient
+        .from('homeschool_grading')
+        .select('client_updated_at')
+        .eq('user_id', currentUserId)
+        .maybeSingle();
+      if (readErr) { console.error(readErr); setStatus(`Synced (verify failed: ${readErr.message || 'error'})`); return true; }
+      setStatus('Synced');
+      setCloudStatus(`Cloud: ${new Date(Number(state._updatedAt || Date.now())).toLocaleString()}`, true);
+      return true;
+    } catch (e) {
+      console.error(e);
+      setStatus('Synced');
+      setCloudStatus('Cloud: synced', true);
+      return true;
+    }
   }
 
   let state = loadState();
@@ -231,20 +254,45 @@
   const authSignUpBtn = document.getElementById('auth-signup');
   const authSignOutBtn = document.getElementById('auth-signout');
   const authUserEmailLabel = document.getElementById('auth-user-email');
+  const authMessage = document.getElementById('auth-message');
+  const cloudStatus = document.getElementById('cloud-status');
 
   function setStatus(msg) {
     statusText.textContent = msg;
     setTimeout(() => statusText.textContent = 'Ready', 1500);
   }
 
+  function setCloudStatus(msg, ok) {
+    if (!cloudStatus) return;
+    cloudStatus.textContent = msg || '';
+    cloudStatus.style.color = ok === false ? 'var(--danger)' : 'var(--muted)';
+  }
+
   function updateAuthUi(session) {
     const email = session && session.user ? (session.user.email || '') : '';
     if (authUserEmailLabel) authUserEmailLabel.textContent = email ? `Signed in: ${email}` : '';
-    if (authSignInBtn) authSignInBtn.disabled = !!email;
-    if (authSignUpBtn) authSignUpBtn.disabled = !!email;
-    if (authSignOutBtn) authSignOutBtn.disabled = !email;
+    const signedIn = !!email;
+    if (authSignInBtn) {
+      authSignInBtn.disabled = signedIn;
+      authSignInBtn.style.display = signedIn ? 'none' : '';
+    }
+    if (authSignUpBtn) {
+      authSignUpBtn.disabled = signedIn;
+      authSignUpBtn.style.display = signedIn ? 'none' : '';
+    }
+    if (authSignOutBtn) {
+      authSignOutBtn.disabled = !signedIn;
+      authSignOutBtn.style.display = signedIn ? '' : 'none';
+    }
+    if (authEmailInput && authEmailInput.parentElement) {
+      authEmailInput.parentElement.style.display = signedIn ? 'none' : '';
+    }
+    if (authPasswordInput && authPasswordInput.parentElement) {
+      authPasswordInput.parentElement.style.display = signedIn ? 'none' : '';
+    }
     const syncBtn = document.getElementById('sync-now-btn');
     if (syncBtn) syncBtn.disabled = !email;
+    if (authMessage) authMessage.textContent = '';
   }
 
   // Tabs
@@ -1975,8 +2023,24 @@
 
   if (syncNowBtn) {
     syncNowBtn.addEventListener('click', async () => {
+      setStatus('Syncing...');
+      setCloudStatus && setCloudStatus('Cloud: syncing...', false);
+      // Fast-fail if config invalid
+      if (!supabaseConfigLooksValid(SUPABASE_URL, SUPABASE_ANON_KEY)) {
+        setStatus('Cloud not configured');
+        setCloudStatus && setCloudStatus('Cloud: not configured', false);
+        return;
+      }
       await initSupabaseSync();
-      try { await uploadState(true); } catch (_) { setStatus('Sync failed'); return; }
+      try {
+        const ok = await uploadState(true);
+        if (!ok) return;
+      } catch (e) {
+        console.error(e);
+        setStatus('Sync failed');
+        setCloudStatus && setCloudStatus('Cloud: write failed', false);
+        return;
+      }
     });
   }
 
@@ -2018,8 +2082,15 @@
     const email = authEmailInput && authEmailInput.value.trim();
     const password = authPasswordInput && authPasswordInput.value;
     if (!email || !password) { setStatus('Enter email and password'); return; }
-    const { error } = await supabaseClient.auth.signInWithPassword({ email, password });
-    if (error) { console.error(error); setStatus('Sign in failed'); return; }
+    if (!supabaseClient) { setStatus('Cloud not configured'); return; }
+    try {
+      const { error } = await supabaseClient.auth.signInWithPassword({ email, password });
+      if (error) { console.error(error); setStatus(error.message || 'Sign in failed'); return; }
+    } catch (err) {
+      console.error(err);
+      setStatus((err && err.message) || 'Sign in failed');
+      return;
+    }
     setStatus('Signed in');
   });
   if (authSignUpBtn) authSignUpBtn.addEventListener('click', async (e) => {
@@ -2028,16 +2099,50 @@
     const email = authEmailInput && authEmailInput.value.trim();
     const password = authPasswordInput && authPasswordInput.value;
     if (!email || !password) { setStatus('Enter email and password'); return; }
-    const { error } = await supabaseClient.auth.signUp({ email, password });
-    if (error) { console.error(error); setStatus('Sign up failed'); return; }
+    if (String(password).length < 6) { setStatus('Password must be at least 6 characters'); return; }
+    if (!supabaseClient) { setStatus('Cloud not configured'); return; }
+    try {
+      const { data, error } = await supabaseClient.auth.signUp({ email, password });
+      if (error) { console.error(error); setStatus(error.message || 'Sign up failed'); return; }
+      if (authMessage) authMessage.textContent = 'Check your email to confirm, then return here to Sign In.';
+    } catch (err) {
+      console.error(err);
+      setStatus((err && err.message) || 'Sign up failed');
+      return;
+    }
     setStatus('Check email to confirm');
   });
   if (authSignOutBtn) authSignOutBtn.addEventListener('click', async (e) => {
     e.preventDefault();
-    if (!supabaseClient) return;
-    const { error } = await supabaseClient.auth.signOut();
-    if (error) { console.error(error); setStatus('Sign out failed'); return; }
-    setStatus('Signed out');
+    if (!supabaseClient) await initSupabaseSync();
+    // Always reflect signed-out UI immediately
+    currentUserId = null;
+    updateAuthUi(null);
+    if (authMessage) authMessage.textContent = '';
+    setStatus('Signing out...');
+    if (!supabaseClient) { setStatus('Signed out'); return; }
+    try {
+      // Ensure local session is cleared even if network/global sign-out fails
+      try { await supabaseClient.auth.signOut({ scope: 'local' }); } catch (_) { }
+      const { error } = await supabaseClient.auth.signOut();
+      if (error) { console.error(error); }
+      try { if (supabaseChannel) { await supabaseClient.removeChannel(supabaseChannel); supabaseChannel = null; } } catch (_) { }
+      // Verify session really cleared
+      try {
+        const { data: sess } = await supabaseClient.auth.getSession();
+        const hasSession = !!(sess && sess.session && sess.session.user);
+        if (hasSession) {
+          setStatus('Signed out locally');
+        } else {
+          setStatus('Signed out');
+        }
+      } catch (_) {
+        setStatus('Signed out');
+      }
+    } catch (err) {
+      console.error(err);
+      setStatus((err && err.message) || 'Sign out failed');
+    }
   });
 
 })();

@@ -22,29 +22,27 @@
       <button class="tab" data-tab="reports" role="tab" aria-selected="false">Reports</button>
       <button class="tab" data-tab="settings" role="tab" aria-selected="false">Settings</button>
     </nav>
+    <div class="header-auth">
+      <label>
+        <span class="sr-only">Email</span>
+        <input type="email" id="auth-email" placeholder="email@example.com">
+      </label>
+      <label>
+        <span class="sr-only">Password</span>
+        <input type="password" id="auth-password" placeholder="Password">
+      </label>
+      <button id="auth-signin" class="btn outline">Sign In</button>
+      <button id="auth-signup" class="btn outline">Sign Up</button>
+      <span id="auth-user-email" style="color: var(--muted);"></span>
+      <button id="auth-signout" class="btn outline">Sign Out</button>
+      <span id="auth-message" class="auth-msg" aria-live="polite"></span>
+    </div>
   </header>
 
   <main>
     <section id="settings" class="tab-panel" role="tabpanel" aria-labelledby="settings-tab">
       <div class="panel-grid">
-        <section class="card">
-          <h2>Account</h2>
-          <div class="card-actions">
-            <label>
-              <span class="sr-only">Email</span>
-              <input type="email" id="auth-email" placeholder="email@example.com">
-            </label>
-            <label>
-              <span class="sr-only">Password</span>
-              <input type="password" id="auth-password" placeholder="Password">
-            </label>
-            <button id="auth-signin" class="btn outline">Sign In</button>
-            <button id="auth-signup" class="btn outline">Sign Up</button>
-            <button id="auth-signout" class="btn outline">Sign Out</button>
-            <span id="auth-user-email" style="color: var(--muted);"></span>
-          </div>
-          <p class="subtitle">Sign in to enable cloud sync via Supabase.</p>
-        </section>
+
         <section class="card span-2">
           <div class="card-head">
             <h2>School Info</h2>
@@ -249,6 +247,7 @@
 
   <footer class="app-footer">
     <span id="status-text">Ready</span>
+    <span id="cloud-status" style="margin-left:12px; color: var(--muted);">Cloud: —</span>
   </footer>
 
   <script src="scripts.js"></script>
